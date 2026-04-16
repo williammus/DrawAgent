@@ -39,6 +39,14 @@ class ReviewErrorStage(StrEnum):
     UNKNOWN = "unknown"
 
 
+class NodeName(StrEnum):
+    LOGICIAN = "logician"
+    STYLE_CONFIGURATOR = "style_configurator"
+    VISUAL_MAPPER = "visual_mapper"
+    CRITIC = "critic"
+    SUMMARY = "summary"
+
+
 class EventType(StrEnum):
     STAGE_STARTED = "stage_started"
     STAGE_COMPLETED = "stage_completed"
@@ -54,6 +62,8 @@ class ErrorCode(StrEnum):
     SESSION_NOT_FOUND = "session_not_found"
     SESSION_EXPIRED = "session_expired"
     ARTIFACT_VALIDATION = "artifact_validation_error"
+    PROMPT_RENDER = "prompt_render_error"
+    LLM_INVOCATION = "llm_invocation_error"
     REVIEW_REJECTED = "review_rejected"
     ADAPTER_INVOCATION = "adapter_invocation_error"
     HTTP_ERROR = "http_error"

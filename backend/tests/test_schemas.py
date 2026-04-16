@@ -8,6 +8,7 @@ from app.schemas.artifacts import (
     ReviewSpec,
     StyleSpec,
 )
+from app.schemas.agents import OrchestratorDecisionSpec
 from app.schemas.common import ReviewErrorStage
 from app.schemas.events import ReviewFailedEvent
 
@@ -85,3 +86,15 @@ def test_review_failed_event_uses_discriminated_payload() -> None:
 
     assert event.event_type == "review_failed"
     assert event.error_stage == ReviewErrorStage.STYLE_CONFIGURATOR
+
+
+def test_orchestrator_decision_requires_empty_selected_nodes_when_clarifying() -> None:
+    with pytest.raises(ValidationError):
+        OrchestratorDecisionSpec(
+            intent="clarify",
+            requires_clarification=True,
+            clarification_question="Please provide the abstract.",
+            selected_nodes=["logician"],
+            reason="Missing source text.",
+            user_message="请补充摘要。",
+        )

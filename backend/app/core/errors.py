@@ -40,6 +40,18 @@ class ArtifactValidationError(DrawAgentError):
     default_message = "Artifact validation failed."
 
 
+class PromptRenderError(DrawAgentError):
+    status_code = 500
+    error_code = ErrorCode.PROMPT_RENDER
+    default_message = "Prompt rendering failed."
+
+
+class LLMInvocationError(DrawAgentError):
+    status_code = 502
+    error_code = ErrorCode.LLM_INVOCATION
+    default_message = "LLM invocation failed."
+
+
 class ReviewRejectedError(DrawAgentError):
     status_code = 409
     error_code = ErrorCode.REVIEW_REJECTED

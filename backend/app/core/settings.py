@@ -20,6 +20,9 @@ class Settings(BaseSettings):
     max_session_file_size_mb: int = 25
     llm_api_key: str = ""
     llm_base_url: str = ""
+    llm_model: str = ""
+    llm_timeout_seconds: int = 120
+    llm_max_retries: int = 2
     image_api_key: str = ""
     image_base_url: str = ""
 

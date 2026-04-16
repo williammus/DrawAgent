@@ -14,6 +14,7 @@ from app.schemas.artifacts import (
     StoredFileMeta,
     StyleSpec,
 )
+from app.schemas.agents import OrchestratorDecisionSpec
 from app.schemas.common import IntentType, StageName
 
 
@@ -26,6 +27,7 @@ class GraphState(TypedDict):
     source_files: list[StoredFileMeta]
     research_context: dict[str, Any] | None
     user_feedback: str | None
+    orchestrator_decision: OrchestratorDecisionSpec | None
     payload_logic: LogicSpec | None
     payload_style: StyleSpec | None
     payload_mapper: MapperSpec | None
@@ -51,6 +53,7 @@ def build_initial_graph_state(session_id: str) -> GraphState:
             "source_files": [],
             "research_context": None,
             "user_feedback": None,
+            "orchestrator_decision": None,
             "payload_logic": None,
             "payload_style": None,
             "payload_mapper": None,

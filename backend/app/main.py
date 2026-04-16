@@ -7,11 +7,14 @@ from contextlib import asynccontextmanager, suppress
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.agents import build_agent_runtime
 from app.api.routes.health import router as health_router
 from app.core.logging import configure_logging
 from app.core.settings import get_settings
+from app.knowledge import StyleKnowledgeProvider
 from app.middlewares.error_handler import register_error_handlers
 from app.middlewares.request_context import RequestContextMiddleware
+from app.prompts import PromptRegistry, PromptRenderer
 from app.storage import CleanupService, SessionStore, TempFileManager
 
 
@@ -46,10 +49,23 @@ async def lifespan(app: FastAPI):
     session_store = SessionStore(ttl_seconds=settings.session_ttl_seconds)
     temp_file_manager = TempFileManager(settings.temp_dir)
     cleanup_service = CleanupService(session_store=session_store, temp_file_manager=temp_file_manager)
+    prompt_registry = PromptRegistry()
+    prompt_renderer = PromptRenderer()
+    style_knowledge_provider = StyleKnowledgeProvider()
+    agent_runtime = build_agent_runtime(
+        settings,
+        prompt_registry=prompt_registry,
+        prompt_renderer=prompt_renderer,
+        style_knowledge_provider=style_knowledge_provider,
+    )
 
     app.state.session_store = session_store
     app.state.temp_file_manager = temp_file_manager
     app.state.cleanup_service = cleanup_service
+    app.state.prompt_registry = prompt_registry
+    app.state.prompt_renderer = prompt_renderer
+    app.state.style_knowledge_provider = style_knowledge_provider
+    app.state.agent_runtime = agent_runtime
 
     startup_cleanup_report = cleanup_service.cleanup_orphaned_directories()
     if startup_cleanup_report.removed_directories or startup_cleanup_report.failed_targets:

@@ -12,6 +12,7 @@ def test_build_initial_graph_state_returns_expected_defaults() -> None:
     assert state["intent"] == IntentType.UNKNOWN
     assert state["messages"] == []
     assert state["source_files"] == []
+    assert state["orchestrator_decision"] is None
     assert state["payload_logic"] is None
     assert state["payload_final"] is None
     assert state["error_count"] == 0

@@ -15,3 +15,7 @@ def test_healthz_returns_ok() -> None:
         assert hasattr(client.app.state, "session_store")
         assert hasattr(client.app.state, "temp_file_manager")
         assert hasattr(client.app.state, "cleanup_service")
+        assert hasattr(client.app.state, "prompt_registry")
+        assert hasattr(client.app.state, "prompt_renderer")
+        assert hasattr(client.app.state, "style_knowledge_provider")
+        assert hasattr(client.app.state, "agent_runtime")

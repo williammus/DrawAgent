@@ -1,0 +1,64 @@
+{
+  "default": {
+    "profile_name": "general_scientific",
+    "recommended_palette": ["#1F3C88", "#D9E2F2", "#4F6D7A"],
+    "layout_bias": "clean modular left-to-right or top-down composition",
+    "notes": [
+      "Use flat 2D scientific diagram language.",
+      "Prefer readable labels and restrained contrast.",
+      "Avoid photorealistic rendering, 3D bevels, and decorative textures."
+    ]
+  },
+  "discipline_profiles": {
+    "computer vision": {
+      "profile_name": "cv_conference",
+      "recommended_palette": ["#003049", "#669BBC", "#EAE2B7"],
+      "layout_bias": "pipeline-centric with clear stage grouping",
+      "notes": [
+        "Match CVPR/ICCV style expectations.",
+        "Use regular modules, arrows, feature-flow grouping, and concise legends."
+      ]
+    },
+    "biology": {
+      "profile_name": "biomedical_figure",
+      "recommended_palette": ["#1B4332", "#95D5B2", "#D8F3DC"],
+      "layout_bias": "pathway-oriented with hierarchy and annotation callouts",
+      "notes": [
+        "Prioritize pathway readability and semantic grouping.",
+        "Use muted tones and consistent iconography."
+      ]
+    },
+    "social science": {
+      "profile_name": "concept_framework",
+      "recommended_palette": ["#264653", "#E9C46A", "#F4A261"],
+      "layout_bias": "concept boxes with causal or mediation arrows",
+      "notes": [
+        "Prefer regular boxes, matrices, or conceptual flow diagrams.",
+        "Avoid overly technical network aesthetics."
+      ]
+    }
+  },
+  "journal_profiles": {
+    "cvpr": {
+      "profile_name": "cvpr",
+      "notes": [
+        "Favor crisp vector graphics, restrained colors, and modular pipelines.",
+        "Keep hierarchy clear for dense technical content."
+      ]
+    },
+    "nature": {
+      "profile_name": "nature",
+      "notes": [
+        "Use understated palettes, generous whitespace, and publication-grade clarity.",
+        "Avoid gaming-style colors or decorative backgrounds."
+      ]
+    },
+    "science": {
+      "profile_name": "science",
+      "notes": [
+        "Use clean explanatory layout with strong annotation discipline.",
+        "Prefer broad-audience readability over highly niche visual shorthand."
+      ]
+    }
+  }
+}

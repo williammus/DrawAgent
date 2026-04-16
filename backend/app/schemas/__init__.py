@@ -1,3 +1,4 @@
+from app.schemas.agents import OrchestratorDecisionSpec
 from app.schemas.api import (
     ApiErrorResponse,
     ArtifactResponse,
@@ -18,7 +19,14 @@ from app.schemas.artifacts import (
     StoredFileMeta,
     StyleSpec,
 )
-from app.schemas.common import ErrorCode, EventType, IntentType, ReviewErrorStage, StageName
+from app.schemas.common import (
+    ErrorCode,
+    EventType,
+    IntentType,
+    NodeName,
+    ReviewErrorStage,
+    StageName,
+)
 from app.schemas.events import AgentEvent
 
 __all__ = [
@@ -36,6 +44,8 @@ __all__ = [
     "IntentType",
     "LogicSpec",
     "MapperSpec",
+    "NodeName",
+    "OrchestratorDecisionSpec",
     "ReviewErrorStage",
     "ReviewSpec",
     "SessionDeleteResponse",
