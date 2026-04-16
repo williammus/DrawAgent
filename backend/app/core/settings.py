@@ -14,6 +14,10 @@ class Settings(BaseSettings):
     frontend_origin: str = "http://127.0.0.1:5173"
     log_level: str = "INFO"
     temp_dir: str = "./tmp"
+    session_ttl_seconds: int = 1800
+    session_cleanup_interval_seconds: int = 300
+    max_session_files: int = 10
+    max_session_file_size_mb: int = 25
     llm_api_key: str = ""
     llm_base_url: str = ""
     image_api_key: str = ""

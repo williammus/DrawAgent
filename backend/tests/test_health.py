@@ -3,14 +3,15 @@ from fastapi.testclient import TestClient
 from app.main import app
 
 
-client = TestClient(app)
-
-
 def test_healthz_returns_ok() -> None:
-    response = client.get("/healthz")
+    with TestClient(app) as client:
+        response = client.get("/healthz")
 
-    assert response.status_code == 200
-    payload = response.json()
-    assert payload["status"] == "ok"
-    assert payload["service"] == "drawagent-backend"
-    assert "request_id" in payload
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["status"] == "ok"
+        assert payload["service"] == "drawagent-backend"
+        assert "request_id" in payload
+        assert hasattr(client.app.state, "session_store")
+        assert hasattr(client.app.state, "temp_file_manager")
+        assert hasattr(client.app.state, "cleanup_service")

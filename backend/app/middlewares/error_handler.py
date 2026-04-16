@@ -6,21 +6,39 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
+from app.core.errors import DrawAgentError
 from app.core.logging import get_request_id
+from app.schemas.common import ErrorCode
 
 
 logger = logging.getLogger(__name__)
 
 
 def register_error_handlers(app: FastAPI) -> None:
+    @app.exception_handler(DrawAgentError)
+    async def drawagent_exception_handler(_: Request, exc: DrawAgentError) -> JSONResponse:
+        logger.warning("Handled DrawAgent error: %s", exc.message)
+        return JSONResponse(
+            status_code=exc.status_code,
+            content={
+                "error": {
+                    "code": exc.error_code,
+                    "message": exc.message,
+                    "details": exc.details,
+                    "request_id": get_request_id(),
+                }
+            },
+        )
+
     @app.exception_handler(HTTPException)
     async def http_exception_handler(_: Request, exc: HTTPException) -> JSONResponse:
         return JSONResponse(
             status_code=exc.status_code,
             content={
                 "error": {
-                    "code": "http_error",
+                    "code": ErrorCode.HTTP_ERROR,
                     "message": exc.detail,
+                    "details": {"status_code": exc.status_code},
                     "request_id": get_request_id(),
                 }
             },
@@ -32,7 +50,7 @@ def register_error_handlers(app: FastAPI) -> None:
             status_code=422,
             content={
                 "error": {
-                    "code": "validation_error",
+                    "code": ErrorCode.REQUEST_VALIDATION,
                     "message": "Request validation failed.",
                     "details": exc.errors(),
                     "request_id": get_request_id(),
@@ -47,8 +65,9 @@ def register_error_handlers(app: FastAPI) -> None:
             status_code=500,
             content={
                 "error": {
-                    "code": "internal_server_error",
+                    "code": ErrorCode.INTERNAL_SERVER_ERROR,
                     "message": "Internal server error.",
+                    "details": {"exception_type": type(exc).__name__},
                     "request_id": get_request_id(),
                 }
             },
