@@ -27,6 +27,7 @@ class GraphState(TypedDict):
     source_files: list[StoredFileMeta]
     research_context: dict[str, Any] | None
     user_feedback: str | None
+    pending_clarification_question: str | None
     orchestrator_decision: OrchestratorDecisionSpec | None
     payload_logic: LogicSpec | None
     payload_style: StyleSpec | None
@@ -38,6 +39,8 @@ class GraphState(TypedDict):
     error_count: int
     last_error: str | None
     needs_clarification: bool
+    interrupted: bool
+    rollback_target: str | None
     user_confirmed: bool
 
 
@@ -53,6 +56,7 @@ def build_initial_graph_state(session_id: str) -> GraphState:
             "source_files": [],
             "research_context": None,
             "user_feedback": None,
+            "pending_clarification_question": None,
             "orchestrator_decision": None,
             "payload_logic": None,
             "payload_style": None,
@@ -64,6 +68,8 @@ def build_initial_graph_state(session_id: str) -> GraphState:
             "error_count": 0,
             "last_error": None,
             "needs_clarification": False,
+            "interrupted": False,
+            "rollback_target": None,
             "user_confirmed": False,
         },
     )

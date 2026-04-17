@@ -23,6 +23,7 @@ class Settings(BaseSettings):
     llm_model: str = ""
     llm_timeout_seconds: int = 120
     llm_max_retries: int = 2
+    workflow_max_error_count: int = 3
     image_api_key: str = ""
     image_base_url: str = ""
 

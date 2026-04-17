@@ -11,6 +11,12 @@ from app.agents import build_agent_runtime
 from app.api.routes.health import router as health_router
 from app.core.logging import configure_logging
 from app.core.settings import get_settings
+from app.graph import (
+    WorkflowCheckpointStore,
+    WorkflowEventStore,
+    WorkflowRunner,
+    build_workflow_app,
+)
 from app.knowledge import StyleKnowledgeProvider
 from app.middlewares.error_handler import register_error_handlers
 from app.middlewares.request_context import RequestContextMiddleware
@@ -48,7 +54,6 @@ async def lifespan(app: FastAPI):
     settings = get_settings()
     session_store = SessionStore(ttl_seconds=settings.session_ttl_seconds)
     temp_file_manager = TempFileManager(settings.temp_dir)
-    cleanup_service = CleanupService(session_store=session_store, temp_file_manager=temp_file_manager)
     prompt_registry = PromptRegistry()
     prompt_renderer = PromptRenderer()
     style_knowledge_provider = StyleKnowledgeProvider()
@@ -58,6 +63,25 @@ async def lifespan(app: FastAPI):
         prompt_renderer=prompt_renderer,
         style_knowledge_provider=style_knowledge_provider,
     )
+    checkpoint_store = WorkflowCheckpointStore()
+    event_store = WorkflowEventStore()
+    workflow_app = build_workflow_app(
+        agent_runtime=agent_runtime,
+        event_store=event_store,
+        checkpointer=checkpoint_store.saver,
+        max_error_count=settings.workflow_max_error_count,
+    )
+    workflow_runner = WorkflowRunner(
+        workflow_app=workflow_app,
+        session_store=session_store,
+        checkpoint_store=checkpoint_store,
+        event_store=event_store,
+    )
+    cleanup_service = CleanupService(
+        session_store=session_store,
+        temp_file_manager=temp_file_manager,
+        session_cleanup_hooks=[workflow_runner.clear_session],
+    )
 
     app.state.session_store = session_store
     app.state.temp_file_manager = temp_file_manager
@@ -66,6 +90,10 @@ async def lifespan(app: FastAPI):
     app.state.prompt_renderer = prompt_renderer
     app.state.style_knowledge_provider = style_knowledge_provider
     app.state.agent_runtime = agent_runtime
+    app.state.workflow_checkpoint_store = checkpoint_store
+    app.state.workflow_event_store = event_store
+    app.state.workflow_app = workflow_app
+    app.state.workflow_runner = workflow_runner
 
     startup_cleanup_report = cleanup_service.cleanup_orphaned_directories()
     if startup_cleanup_report.removed_directories or startup_cleanup_report.failed_targets:

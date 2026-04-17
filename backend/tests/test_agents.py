@@ -1,5 +1,3 @@
-import pytest
-
 from app.agents import (
     CriticExecutor,
     LogicianExecutor,
@@ -8,7 +6,6 @@ from app.agents import (
     SummaryExecutor,
     VisualMapperExecutor,
 )
-from app.core.errors import ReviewRejectedError
 from app.graph.state import build_initial_graph_state
 from app.knowledge import StyleKnowledgeProvider
 from app.prompts import PromptRegistry, PromptRenderer
@@ -198,7 +195,7 @@ def test_visual_mapper_executor_returns_mapper_payload() -> None:
     assert updates["payload_mapper"].module_positions["Encoder"] == "left"
 
 
-def test_critic_executor_raises_review_rejected_for_failed_review() -> None:
+def test_critic_executor_returns_failed_review_payload() -> None:
     state = build_state_with_inputs()
     state["payload_logic"] = build_logic_payload()
     state["payload_style"] = build_style_payload()
@@ -215,10 +212,10 @@ def test_critic_executor_raises_review_rejected_for_failed_review() -> None:
     )
     executor = CriticExecutor(**build_common_kwargs(fake_llm))
 
-    with pytest.raises(ReviewRejectedError) as exc_info:
-        executor.run(state)
+    updates = executor.run(state)
 
-    assert exc_info.value.details["review"]["error_stage"] == ReviewErrorStage.VISUAL_MAPPER
+    assert updates["payload_review"].passed is False
+    assert updates["payload_review"].error_stage == ReviewErrorStage.VISUAL_MAPPER
 
 
 def test_summary_executor_returns_final_prompt_payload() -> None:

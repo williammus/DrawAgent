@@ -19,3 +19,7 @@ def test_healthz_returns_ok() -> None:
         assert hasattr(client.app.state, "prompt_renderer")
         assert hasattr(client.app.state, "style_knowledge_provider")
         assert hasattr(client.app.state, "agent_runtime")
+        assert hasattr(client.app.state, "workflow_checkpoint_store")
+        assert hasattr(client.app.state, "workflow_event_store")
+        assert hasattr(client.app.state, "workflow_app")
+        assert hasattr(client.app.state, "workflow_runner")

@@ -7,6 +7,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parent
+PYTEST_BASETEMP = Path.home() / ".codex" / "memories" / "drawagent_pytest_tmp"
 
 
 def run_command(args: list[str]) -> int:
@@ -33,7 +34,19 @@ def dev() -> int:
 
 
 def test() -> int:
-    return run_command([sys.executable, "-m", "pytest"])
+    PYTEST_BASETEMP.mkdir(parents=True, exist_ok=True)
+    return run_command(
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            "tests",
+            "--basetemp",
+            str(PYTEST_BASETEMP),
+            "-p",
+            "no:cacheprovider",
+        ]
+    )
 
 
 def lint() -> int:

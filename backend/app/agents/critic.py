@@ -3,7 +3,6 @@ from __future__ import annotations
 from typing import Any
 
 from app.agents.base import StructuredAgentExecutor
-from app.core.errors import ReviewRejectedError
 from app.graph.state import GraphState
 from app.schemas import ReviewSpec, StageName
 
@@ -23,15 +22,6 @@ class CriticExecutor(StructuredAgentExecutor[ReviewSpec]):
         }
 
     def build_state_updates(self, state: GraphState, artifact: ReviewSpec) -> dict[str, Any]:
-        if not artifact.passed:
-            raise ReviewRejectedError(
-                artifact.reason,
-                details={
-                    "stage": StageName.REVIEWING,
-                    "review": artifact.model_dump(mode="json"),
-                },
-            )
-
         return {
             "payload_review": artifact,
             "stage": StageName.REVIEWING,
