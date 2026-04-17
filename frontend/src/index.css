@@ -3,13 +3,48 @@
 @tailwind utilities;
 
 :root {
-  color: #111827;
-  background: #edf2f7;
-  font-family: "Segoe UI", "PingFang SC", sans-serif;
+  color: #f8fafc;
+  background: #111315;
+  font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei UI", sans-serif;
+  --color-app: #111315;
+  --color-panel: #17191c;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  background: var(--color-app);
 }
 
 body {
   margin: 0;
   min-width: 320px;
   min-height: 100vh;
+  background:
+    radial-gradient(circle at top, rgba(16, 163, 127, 0.16), transparent 34%),
+    linear-gradient(180deg, #151719 0%, #111315 100%);
+  color: #f8fafc;
+}
+
+#root {
+  min-height: 100vh;
+}
+
+button,
+input,
+textarea {
+  font: inherit;
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+}
+
+::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  border: 2px solid transparent;
+  background: rgba(255, 255, 255, 0.12);
+  background-clip: padding-box;
 }

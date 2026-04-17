@@ -11,6 +11,12 @@ export default tseslint.config(
     ignores: ["dist"],
   },
   {
+    files: ["**/*.cjs"],
+    languageOptions: {
+      globals: globals.node,
+    },
+  },
+  {
     files: ["**/*.{ts,tsx}"],
     languageOptions: {
       ecmaVersion: 2020,

@@ -5,9 +5,11 @@ export default {
   theme: {
     extend: {
       colors: {
-        ink: "#111827",
-        mist: "#edf2f7",
-        tide: "#0f766e",
+        app: "#111315",
+        panel: "#17191c",
+        ink: "#f8fafc",
+        mist: "#94a3b8",
+        tide: "#10a37f",
       },
     },
   },
