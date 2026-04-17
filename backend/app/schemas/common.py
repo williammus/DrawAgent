@@ -57,10 +57,20 @@ class EventType(StrEnum):
     ERROR = "error"
 
 
+class GenerateStatus(StrEnum):
+    ACCEPTED = "accepted"
+    RUNNING = "running"
+    COMPLETED = "completed"
+    FAILED = "failed"
+
+
 class ErrorCode(StrEnum):
     INPUT_VALIDATION = "input_validation_error"
     SESSION_NOT_FOUND = "session_not_found"
     SESSION_EXPIRED = "session_expired"
+    RESOURCE_CONFLICT = "resource_conflict"
+    FILE_NOT_FOUND = "file_not_found"
+    IMAGE_NOT_READY = "image_not_ready"
     ARTIFACT_VALIDATION = "artifact_validation_error"
     PROMPT_RENDER = "prompt_render_error"
     LLM_INVOCATION = "llm_invocation_error"

@@ -1,0 +1,140 @@
+from __future__ import annotations
+
+import json
+import time
+from copy import deepcopy
+
+from fastapi.testclient import TestClient
+
+from app.main import app
+from app.schemas import FinalPromptSpec
+from app.schemas.events import StageStartedEvent
+from app.schemas.common import StageName
+
+
+class StubChatService:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, object]] = []
+
+    def submit_message(
+        self,
+        *,
+        session_id: str,
+        request_id: str,
+        message: str,
+        attachment_ids: list[str],
+    ) -> str:
+        self.calls.append(
+            {
+                "session_id": session_id,
+                "request_id": request_id,
+                "message": message,
+                "attachment_ids": attachment_ids,
+            }
+        )
+        return "run_workflow"
+
+
+def wait_until(predicate, timeout_seconds: float = 2.0) -> bool:
+    deadline = time.time() + timeout_seconds
+    while time.time() < deadline:
+        if predicate():
+            return True
+        time.sleep(0.05)
+    return False
+
+
+def test_phase5_api_flow() -> None:
+    with TestClient(app) as client:
+        session_response = client.post("/api/session/init")
+        assert session_response.status_code == 201
+        session_payload = session_response.json()
+        session_id = session_payload["session_id"]
+
+        upload_response = client.post(
+            "/api/upload",
+            data={"session_id": session_id},
+            files=[("files", ("paper.md", b"# Abstract", "text/markdown"))],
+        )
+        assert upload_response.status_code == 201
+        uploaded_file = upload_response.json()["files"][0]
+        file_id = uploaded_file["file_id"]
+        state = client.app.state.session_store.get_state(session_id)
+        assert len(state["uploaded_files"]) == 1
+        assert state["source_files"][0].file_id == file_id
+
+        stub_chat_service = StubChatService()
+        client.app.state.chat_service = stub_chat_service
+        message_response = client.post(
+            "/api/chat/message",
+            json={
+                "session_id": session_id,
+                "message": "Please create a figure.",
+                "attachments": [file_id],
+            },
+        )
+        assert message_response.status_code == 202
+        message_payload = message_response.json()
+        assert message_payload["accepted"] is True
+        assert message_payload["stream_url"] == f"/api/chat/stream/{session_id}"
+        assert stub_chat_service.calls[0]["attachment_ids"] == [file_id]
+
+        client.app.state.workflow_event_store.append(
+            session_id,
+            StageStartedEvent(
+                session_id=session_id,
+                stage=StageName.PLANNING,
+                request_id="req-stream",
+                message="Planning started.",
+            ),
+        )
+        with client.stream("GET", f"/api/chat/stream/{session_id}?once=true") as response:
+            assert response.status_code == 200
+            streamed_payload = None
+            for line in response.iter_lines():
+                if line.startswith("data: "):
+                    streamed_payload = json.loads(line.removeprefix("data: "))
+                    break
+        assert streamed_payload is not None
+        assert streamed_payload["event_type"] == "stage_started"
+        assert streamed_payload["data"]["message"] == "Planning started."
+
+        artifacts_response = client.get(f"/api/artifacts/{session_id}")
+        assert artifacts_response.status_code == 200
+        assert artifacts_response.json()["payload_final"] is None
+
+        record = client.app.state.session_store.get_session(session_id)
+        new_state = deepcopy(record.state)
+        new_state["payload_final"] = FinalPromptSpec(
+            final_prompt_en="A clean scientific pipeline figure.",
+            final_prompt_cn="一张清晰的科研流程图。",
+            prompt_version="v-test",
+            generation_notes=["Use compact labels."],
+            ready_for_generation=True,
+        )
+        client.app.state.session_store.update_state(session_id, new_state)
+
+        generate_response = client.post(f"/api/generate/{session_id}")
+        assert generate_response.status_code == 202
+        assert generate_response.json()["status"] == "accepted"
+        assert generate_response.json()["download_url"] == f"/api/download/{session_id}"
+
+        assert wait_until(
+            lambda: client.app.state.session_store.get_state(session_id)["generated_image_meta"] is not None
+        )
+
+        download_response = client.get(f"/api/download/{session_id}")
+        assert download_response.status_code == 200
+        assert download_response.headers["content-type"] == "image/png"
+        assert download_response.content
+
+        delete_upload_response = client.delete(f"/api/upload/{session_id}/{file_id}")
+        assert delete_upload_response.status_code == 200
+        assert delete_upload_response.json()["deleted"] is True
+        assert client.app.state.session_store.get_state(session_id)["uploaded_files"] == []
+
+        delete_session_response = client.delete(f"/api/session/{session_id}")
+        assert delete_session_response.status_code == 200
+        delete_payload = delete_session_response.json()
+        assert delete_payload["deleted"] is True
+        assert delete_payload["cleanup"]["removed_sessions"] == [session_id]

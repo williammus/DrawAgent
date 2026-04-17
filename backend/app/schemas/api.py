@@ -12,9 +12,10 @@ from app.schemas.artifacts import (
     MapperSpec,
     ReviewSpec,
     SessionStateSummary,
+    StoredFileMeta,
     StyleSpec,
 )
-from app.schemas.common import ErrorCode, StageName
+from app.schemas.common import ErrorCode, GenerateStatus, StageName
 
 
 class StrictModel(BaseModel):
@@ -53,7 +54,20 @@ class ChatMessageResponse(StrictModel):
     session_id: str
     stage: StageName
     summary: SessionStateSummary
+    accepted: bool = True
+    stream_url: str
     response_message: str | None = None
+
+
+class UploadResponse(StrictModel):
+    session_id: str
+    files: list[StoredFileMeta] = Field(default_factory=list)
+
+
+class UploadDeleteResponse(StrictModel):
+    session_id: str
+    file_id: str
+    deleted: bool
 
 
 class ArtifactResponse(StrictModel):
@@ -68,6 +82,13 @@ class ArtifactResponse(StrictModel):
 class GenerateResponse(StrictModel):
     session_id: str
     stage: StageName
-    status: str
+    status: GenerateStatus
     generated_image_path: str | None = None
     generated_image_meta: GeneratedImageMeta | None = None
+    download_url: str | None = None
+
+
+class SseEventEnvelope(StrictModel):
+    event_id: int
+    event_type: str
+    data: dict[str, Any]

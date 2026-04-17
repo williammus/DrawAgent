@@ -5,8 +5,11 @@ from app.schemas.api import (
     ChatMessageRequest,
     ChatMessageResponse,
     GenerateResponse,
+    SseEventEnvelope,
     SessionDeleteResponse,
     SessionInitResponse,
+    UploadDeleteResponse,
+    UploadResponse,
 )
 from app.schemas.artifacts import (
     CleanupReport,
@@ -22,6 +25,7 @@ from app.schemas.artifacts import (
 from app.schemas.common import (
     ErrorCode,
     EventType,
+    GenerateStatus,
     IntentType,
     NodeName,
     ReviewErrorStage,
@@ -40,6 +44,7 @@ __all__ = [
     "EventType",
     "FinalPromptSpec",
     "GenerateResponse",
+    "GenerateStatus",
     "GeneratedImageMeta",
     "IntentType",
     "LogicSpec",
@@ -52,6 +57,9 @@ __all__ = [
     "SessionInitResponse",
     "SessionStateSummary",
     "StageName",
+    "SseEventEnvelope",
     "StoredFileMeta",
     "StyleSpec",
+    "UploadDeleteResponse",
+    "UploadResponse",
 ]

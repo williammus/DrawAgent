@@ -8,7 +8,12 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.agents import build_agent_runtime
+from app.api.routes.artifacts import router as artifacts_router
+from app.api.routes.chat import router as chat_router
+from app.api.routes.generation import router as generation_router
 from app.api.routes.health import router as health_router
+from app.api.routes.session import router as session_router
+from app.api.routes.upload import router as upload_router
 from app.core.logging import configure_logging
 from app.core.settings import get_settings
 from app.graph import (
@@ -17,10 +22,12 @@ from app.graph import (
     WorkflowRunner,
     build_workflow_app,
 )
+from app.image import build_image_adapter
 from app.knowledge import StyleKnowledgeProvider
 from app.middlewares.error_handler import register_error_handlers
 from app.middlewares.request_context import RequestContextMiddleware
 from app.prompts import PromptRegistry, PromptRenderer
+from app.services import ChatService, GenerationService, SessionService, SessionTaskManager
 from app.storage import CleanupService, SessionStore, TempFileManager
 
 
@@ -65,6 +72,7 @@ async def lifespan(app: FastAPI):
     )
     checkpoint_store = WorkflowCheckpointStore()
     event_store = WorkflowEventStore()
+    session_task_manager = SessionTaskManager()
     workflow_app = build_workflow_app(
         agent_runtime=agent_runtime,
         event_store=event_store,
@@ -77,12 +85,35 @@ async def lifespan(app: FastAPI):
         checkpoint_store=checkpoint_store,
         event_store=event_store,
     )
+    image_adapter = build_image_adapter(settings, temp_file_manager=temp_file_manager)
+    session_cleanup_hooks = [workflow_runner.clear_session, session_task_manager.clear_session]
     cleanup_service = CleanupService(
         session_store=session_store,
         temp_file_manager=temp_file_manager,
-        session_cleanup_hooks=[workflow_runner.clear_session],
+        session_cleanup_hooks=session_cleanup_hooks,
+    )
+    session_service = SessionService(
+        session_store=session_store,
+        temp_file_manager=temp_file_manager,
+        max_session_files=settings.max_session_files,
+        max_session_file_size_mb=settings.max_session_file_size_mb,
+        session_cleanup_hooks=session_cleanup_hooks,
+    )
+    chat_service = ChatService(
+        session_service=session_service,
+        session_store=session_store,
+        workflow_runner=workflow_runner,
+        event_store=event_store,
+        task_manager=session_task_manager,
+    )
+    generation_service = GenerationService(
+        session_store=session_store,
+        event_store=event_store,
+        image_adapter=image_adapter,
+        task_manager=session_task_manager,
     )
 
+    app.state.settings = settings
     app.state.session_store = session_store
     app.state.temp_file_manager = temp_file_manager
     app.state.cleanup_service = cleanup_service
@@ -94,6 +125,11 @@ async def lifespan(app: FastAPI):
     app.state.workflow_event_store = event_store
     app.state.workflow_app = workflow_app
     app.state.workflow_runner = workflow_runner
+    app.state.session_task_manager = session_task_manager
+    app.state.image_adapter = image_adapter
+    app.state.session_service = session_service
+    app.state.chat_service = chat_service
+    app.state.generation_service = generation_service
 
     startup_cleanup_report = cleanup_service.cleanup_orphaned_directories()
     if startup_cleanup_report.removed_directories or startup_cleanup_report.failed_targets:
@@ -111,6 +147,7 @@ async def lifespan(app: FastAPI):
     try:
         yield
     finally:
+        session_task_manager.cancel_all()
         cleanup_task.cancel()
         with suppress(asyncio.CancelledError):
             await cleanup_task
@@ -138,6 +175,11 @@ def create_app() -> FastAPI:
     app.add_middleware(RequestContextMiddleware)
 
     app.include_router(health_router)
+    app.include_router(session_router)
+    app.include_router(chat_router)
+    app.include_router(upload_router)
+    app.include_router(artifacts_router)
+    app.include_router(generation_router)
     register_error_handlers(app)
 
     return app

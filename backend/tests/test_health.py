@@ -23,3 +23,8 @@ def test_healthz_returns_ok() -> None:
         assert hasattr(client.app.state, "workflow_event_store")
         assert hasattr(client.app.state, "workflow_app")
         assert hasattr(client.app.state, "workflow_runner")
+        assert hasattr(client.app.state, "session_task_manager")
+        assert hasattr(client.app.state, "image_adapter")
+        assert hasattr(client.app.state, "session_service")
+        assert hasattr(client.app.state, "chat_service")
+        assert hasattr(client.app.state, "generation_service")

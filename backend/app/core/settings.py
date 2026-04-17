@@ -24,8 +24,12 @@ class Settings(BaseSettings):
     llm_timeout_seconds: int = 120
     llm_max_retries: int = 2
     workflow_max_error_count: int = 3
+    image_provider: str = "mock"
     image_api_key: str = ""
     image_base_url: str = ""
+    image_model: str = "gemini-3-pro-image-preview-4k"
+    image_timeout_seconds: int = 120
+    sse_heartbeat_seconds: int = 15
 
     model_config = SettingsConfigDict(
         env_file=".env",

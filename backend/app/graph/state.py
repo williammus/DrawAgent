@@ -24,6 +24,7 @@ class GraphState(TypedDict):
     stage: StageName
     intent: IntentType
     source_text: str | None
+    uploaded_files: list[StoredFileMeta]
     source_files: list[StoredFileMeta]
     research_context: dict[str, Any] | None
     user_feedback: str | None
@@ -53,6 +54,7 @@ def build_initial_graph_state(session_id: str) -> GraphState:
             "stage": StageName.IDLE,
             "intent": IntentType.UNKNOWN,
             "source_text": None,
+            "uploaded_files": [],
             "source_files": [],
             "research_context": None,
             "user_feedback": None,

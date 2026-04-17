@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import shutil
 from pathlib import Path
+from uuid import uuid4
 
 
 class TempFileManager:
@@ -24,6 +25,22 @@ class TempFileManager:
         uploads_dir.mkdir(parents=True, exist_ok=True)
         outputs_dir.mkdir(parents=True, exist_ok=True)
         return uploads_dir, outputs_dir
+
+    def build_upload_path(self, session_id: str, original_name: str) -> tuple[str, Path]:
+        uploads_dir, _ = self.ensure_session_directories(session_id)
+        suffix = Path(original_name).suffix
+        stored_name = f"{uuid4().hex}{suffix}"
+        return stored_name, uploads_dir / stored_name
+
+    def build_output_path(self, session_id: str, file_name: str) -> Path:
+        _, outputs_dir = self.ensure_session_directories(session_id)
+        return outputs_dir / file_name
+
+    def relative_path(self, path: str | Path) -> str:
+        return str(Path(path).resolve().relative_to(self.base_dir))
+
+    def resolve_relative_path(self, relative_path: str) -> Path:
+        return (self.base_dir / relative_path).resolve()
 
     def delete_session_dir(self, session_id: str) -> bool:
         session_dir = self.session_dir(session_id)

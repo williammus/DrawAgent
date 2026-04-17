@@ -210,6 +210,8 @@ __marimo__/
 backend/.env
 backend/.venv/
 backend/.pytest_cache/
+backend/.pytest_tmp/
+backend/.pip-tmp/
 backend/pytest-cache-files-*/
 backend/.ruff_cache/
 backend/.mypy_cache/

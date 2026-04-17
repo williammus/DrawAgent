@@ -11,6 +11,7 @@ def test_build_initial_graph_state_returns_expected_defaults() -> None:
     assert state["stage"] == StageName.IDLE
     assert state["intent"] == IntentType.UNKNOWN
     assert state["messages"] == []
+    assert state["uploaded_files"] == []
     assert state["source_files"] == []
     assert state["pending_clarification_question"] is None
     assert state["orchestrator_decision"] is None

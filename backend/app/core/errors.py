@@ -34,6 +34,24 @@ class SessionExpiredError(DrawAgentError):
     default_message = "Session expired."
 
 
+class ResourceConflictError(DrawAgentError):
+    status_code = 409
+    error_code = ErrorCode.RESOURCE_CONFLICT
+    default_message = "Requested resource is busy."
+
+
+class SessionFileNotFoundError(DrawAgentError):
+    status_code = 404
+    error_code = ErrorCode.FILE_NOT_FOUND
+    default_message = "Session file not found."
+
+
+class ImageNotReadyError(DrawAgentError):
+    status_code = 409
+    error_code = ErrorCode.IMAGE_NOT_READY
+    default_message = "Generated image is not ready."
+
+
 class ArtifactValidationError(DrawAgentError):
     status_code = 422
     error_code = ErrorCode.ARTIFACT_VALIDATION
