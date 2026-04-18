@@ -1,11 +1,16 @@
 from __future__ import annotations
 
 import json
+import logging
+import time
 from collections.abc import Mapping
 from typing import Any
 
 from app.core.errors import ArtifactValidationError, LLMInvocationError
 from app.core.settings import Settings
+
+
+logger = logging.getLogger(__name__)
 
 
 class LLMClient:
@@ -65,7 +70,10 @@ class LLMClient:
     ) -> str:
         resolved_model = model or self.model
         if not resolved_model:
-            raise LLMInvocationError("LLM model is not configured.", details={"model": resolved_model})
+            raise LLMInvocationError(
+                "LLM model is not configured.",
+                details={"model": resolved_model, "base_url": self.base_url or None},
+            )
 
         messages: list[dict[str, str]] = []
         if system_prompt:
@@ -75,6 +83,12 @@ class LLMClient:
         last_error: Exception | None = None
         for attempt in range(1, self.max_retries + 1):
             try:
+                logger.info(
+                    "Invoking LLM request model=%s base_url=%s attempt=%s",
+                    resolved_model,
+                    self.base_url or "-",
+                    attempt,
+                )
                 response = self._get_client().chat.completions.create(
                     model=resolved_model,
                     messages=messages,
@@ -84,20 +98,33 @@ class LLMClient:
                 if not content.strip():
                     raise LLMInvocationError(
                         "LLM returned empty content.",
-                        details={"model": resolved_model, "attempt": attempt},
+                        details={
+                            "model": resolved_model,
+                            "base_url": self.base_url or None,
+                            "attempt": attempt,
+                        },
                     )
                 return content
             except LLMInvocationError:
                 raise
             except Exception as exc:
                 last_error = exc
+                logger.warning(
+                    "LLM request failed model=%s base_url=%s attempt=%s error_type=%s error=%s",
+                    resolved_model,
+                    self.base_url or "-",
+                    attempt,
+                    type(exc).__name__,
+                    exc,
+                )
 
         raise LLMInvocationError(
             "LLM invocation failed after retries.",
             details={
                 "model": resolved_model,
+                "base_url": self.base_url or None,
                 "attempts": self.max_retries,
-                "error": str(last_error) if last_error else None,
+                **self._serialize_exception(last_error),
             },
         ) from last_error
 
@@ -136,6 +163,45 @@ class LLMClient:
             )
 
         return dict(parsed)
+
+    def run_connectivity_diagnostic(
+        self,
+        *,
+        prompt: str = 'Return only one JSON object: {"ok": true, "ping": "pong", "channel": "llm"}.',
+        system_prompt: str = "You are a connectivity diagnostic assistant. Return JSON only.",
+        model: str | None = None,
+    ) -> dict[str, Any]:
+        resolved_model = model or self.model
+        started_at = time.perf_counter()
+        try:
+            payload = self.generate_json(
+                prompt,
+                system_prompt=system_prompt,
+                model=resolved_model,
+                temperature=0.0,
+            )
+        except Exception as exc:
+            error_payload = {}
+            if isinstance(exc, (LLMInvocationError, ArtifactValidationError)):
+                error_payload = {"error_code": exc.error_code, "details": exc.details}
+            return {
+                "ok": False,
+                "base_url": self.base_url or None,
+                "model": resolved_model or None,
+                "latency_ms": int((time.perf_counter() - started_at) * 1000),
+                "error_type": type(exc).__name__,
+                "error_message": str(exc),
+                **error_payload,
+            }
+
+        return {
+            "ok": True,
+            "base_url": self.base_url or None,
+            "model": resolved_model,
+            "latency_ms": int((time.perf_counter() - started_at) * 1000),
+            "response_keys": sorted(payload.keys()),
+            "response_preview": payload,
+        }
 
     def _extract_content(self, response: Any) -> str:
         choices = getattr(response, "choices", None)
@@ -217,3 +283,30 @@ class LLMClient:
                     return text[start : index + 1]
 
         return None
+
+    def _serialize_exception(self, exception: Exception | None) -> dict[str, Any]:
+        if exception is None:
+            return {"error": None}
+
+        payload: dict[str, Any] = {
+            "error": str(exception),
+            "exception_type": type(exception).__name__,
+        }
+        for field_name in ("status_code", "code", "param", "type"):
+            value = getattr(exception, field_name, None)
+            if value is not None:
+                payload[field_name] = value
+
+        response = getattr(exception, "response", None)
+        response_status = getattr(response, "status_code", None) or getattr(response, "status", None)
+        if response_status is not None:
+            payload["response_status"] = response_status
+
+        body = getattr(exception, "body", None)
+        if body is not None:
+            if isinstance(body, (Mapping, list, str, int, float, bool)):
+                payload["body"] = body
+            else:
+                payload["body"] = str(body)
+
+        return payload

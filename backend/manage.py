@@ -57,11 +57,21 @@ def format_code() -> int:
     return run_command([sys.executable, "-m", "ruff", "format", "app", "tests", "manage.py"])
 
 
+def diag_llm() -> int:
+    return run_command([sys.executable, "-m", "app.diagnostics", "llm"])
+
+
+def diag_image() -> int:
+    return run_command([sys.executable, "-m", "app.diagnostics", "image"])
+
+
 COMMANDS = {
     "dev": dev,
     "test": test,
     "lint": lint,
     "format": format_code,
+    "diag-llm": diag_llm,
+    "diag-image": diag_image,
 }
 
 

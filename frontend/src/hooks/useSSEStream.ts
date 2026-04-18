@@ -9,11 +9,46 @@ interface UseSSEStreamOptions {
   onPromptReady?: () => void;
 }
 
+const MAX_RECONNECT_ATTEMPTS_BEFORE_DISCONNECTED = 3;
+
+function buildErrorSummary(details?: Record<string, unknown> | null) {
+  if (!details) {
+    return null;
+  }
+
+  const parts: string[] = [];
+  const failingNode = typeof details.failing_node === "string" ? details.failing_node : null;
+  const provider = typeof details.provider === "string" ? details.provider : null;
+  const model = typeof details.model === "string" ? details.model : null;
+  const error = typeof details.error === "string" ? details.error : null;
+  const missingFields = Array.isArray(details.missing_fields)
+    ? details.missing_fields.filter((value): value is string => typeof value === "string")
+    : [];
+
+  if (failingNode) {
+    parts.push(`节点: ${failingNode}`);
+  }
+  if (provider) {
+    parts.push(`Provider: ${provider}`);
+  }
+  if (model) {
+    parts.push(`Model: ${model}`);
+  }
+  if (missingFields.length > 0) {
+    parts.push(`缺失配置: ${missingFields.join(", ")}`);
+  }
+  if (error) {
+    parts.push(`原因: ${error}`);
+  }
+
+  return parts.length > 0 ? parts.join(" | ") : null;
+}
+
 export function useSSEStream(options: UseSSEStreamOptions = {}) {
   const sessionId = useAppStore((state) => state.sessionId);
   const latestEventId = useAppStore((state) => state.latestEventId);
   const setLatestEventId = useAppStore((state) => state.setLatestEventId);
-  const setEventStreamConnected = useAppStore((state) => state.setEventStreamConnected);
+  const setEventStreamStatus = useAppStore((state) => state.setEventStreamStatus);
   const applySseEvent = useAppStore((state) => state.applySseEvent);
   const replaceThinkingMessage = useAppStore((state) => state.replaceThinkingMessage);
   const clearThinkingMessages = useAppStore((state) => state.clearThinkingMessages);
@@ -22,11 +57,16 @@ export function useSSEStream(options: UseSSEStreamOptions = {}) {
   const setGeneratedImageUrl = useAppStore((state) => state.setGeneratedImageUrl);
   const reconnectTimerRef = useRef<number | null>(null);
   const lastEventIdRef = useRef(latestEventId);
-  const onPromptReady = options.onPromptReady;
+  const reconnectAttemptsRef = useRef(0);
+  const onPromptReadyRef = useRef(options.onPromptReady);
 
   useEffect(() => {
     lastEventIdRef.current = latestEventId;
   }, [latestEventId]);
+
+  useEffect(() => {
+    onPromptReadyRef.current = options.onPromptReady;
+  }, [options.onPromptReady]);
 
   useEffect(() => {
     if (!sessionId) {
@@ -35,6 +75,8 @@ export function useSSEStream(options: UseSSEStreamOptions = {}) {
 
     const currentSessionId = sessionId;
     let closed = false;
+    reconnectAttemptsRef.current = 0;
+    setEventStreamStatus("connecting");
     let controller = open();
 
     function scheduleReconnect() {
@@ -55,10 +97,16 @@ export function useSSEStream(options: UseSSEStreamOptions = {}) {
         sessionId: currentSessionId,
         afterId: lastEventIdRef.current,
         onOpen: () => {
-          setEventStreamConnected(true);
+          reconnectAttemptsRef.current = 0;
+          setEventStreamStatus("connected");
         },
         onError: () => {
-          setEventStreamConnected(false);
+          reconnectAttemptsRef.current += 1;
+          setEventStreamStatus(
+            reconnectAttemptsRef.current >= MAX_RECONNECT_ATTEMPTS_BEFORE_DISCONNECTED
+              ? "disconnected"
+              : "reconnecting"
+          );
           scheduleReconnect();
         },
         onEvent: (_eventType, payload, eventId) => {
@@ -110,7 +158,7 @@ export function useSSEStream(options: UseSSEStreamOptions = {}) {
                 timestamp: event.timestamp,
                 text: "最终 Prompt 已经准备好。请先预览，再决定是否生成图片。",
               });
-              onPromptReady?.();
+              onPromptReadyRef.current?.();
               break;
             case "image_generated":
               clearThinkingMessages();
@@ -124,15 +172,17 @@ export function useSSEStream(options: UseSSEStreamOptions = {}) {
               break;
             case "error":
               clearThinkingMessages();
-              addMessage({
-                id: crypto.randomUUID(),
-                kind: "error",
-                timestamp: event.timestamp,
-                text: event.message,
-                meta: {
-                  error_code: event.error_code,
-                },
-              });
+                addMessage({
+                  id: crypto.randomUUID(),
+                  kind: "error",
+                  timestamp: event.timestamp,
+                  text: event.message,
+                  meta: {
+                    error_code: event.error_code,
+                    error_summary: buildErrorSummary(event.details),
+                    details: event.details ?? null,
+                  },
+                });
               break;
           }
         },
@@ -141,7 +191,6 @@ export function useSSEStream(options: UseSSEStreamOptions = {}) {
 
     return () => {
       closed = true;
-      setEventStreamConnected(false);
       controller.close();
       if (reconnectTimerRef.current !== null) {
         window.clearTimeout(reconnectTimerRef.current);
@@ -151,11 +200,10 @@ export function useSSEStream(options: UseSSEStreamOptions = {}) {
     addMessage,
     applySseEvent,
     clearThinkingMessages,
-    onPromptReady,
     replaceThinkingMessage,
     sessionId,
     setClarification,
-    setEventStreamConnected,
+    setEventStreamStatus,
     setGeneratedImageUrl,
     setLatestEventId,
   ]);

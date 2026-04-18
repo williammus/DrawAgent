@@ -7,6 +7,7 @@ from uuid import uuid4
 from typing import Any
 
 from app.agents import AgentRuntime
+from app.core.errors import LLMInvocationError
 from app.graph import (
     WorkflowCheckpointStore,
     WorkflowEventStore,
@@ -523,6 +524,45 @@ def test_workflow_runner_trips_error_fuse_on_first_review_failure() -> None:
     assert EventType.ERROR in [
         event.event_type for event in event_store.list_events("session-fuse")
     ]
+
+
+def test_workflow_failure_event_includes_diagnostic_details() -> None:
+    runtime = build_runtime(
+        orchestrator=StubExecutor(
+            "orchestrator",
+            [
+                LLMInvocationError(
+                    "LLM invocation failed after retries.",
+                    details={
+                        "model": "qwen-plus",
+                        "base_url": "https://sg.uiuiapi.com/v1",
+                        "error": "401 Unauthorized",
+                    },
+                )
+            ],
+        ),
+        logician=StubExecutor("logician", []),
+        style_configurator=StubExecutor("style_configurator", []),
+        visual_mapper=StubExecutor("visual_mapper", []),
+        critic=StubExecutor("critic", []),
+        summary=StubExecutor("summary", []),
+    )
+    session_store, _, event_store, _, runner = build_workflow_components(runtime)
+    state = build_initial_graph_state("session-orchestrator-failed")
+    state["source_text"] = "Encoder decoder pipeline."
+    session_store.create_session("session-orchestrator-failed", state)
+
+    final_state = runner.run("session-orchestrator-failed", "req-7b")
+
+    assert final_state["stage"] == StageName.FAILED
+    error_event = [
+        event for event in event_store.list_events("session-orchestrator-failed") if event.event_type == EventType.ERROR
+    ][0]
+    assert error_event.message == "Orchestrator failed."
+    assert error_event.details["failing_node"] == "orchestrator"
+    assert error_event.details["model"] == "qwen-plus"
+    assert error_event.details["base_url"] == "https://sg.uiuiapi.com/v1"
+    assert error_event.details["error"] == "401 Unauthorized"
 
 
 def test_cleanup_service_clears_workflow_state_for_expired_sessions() -> None:

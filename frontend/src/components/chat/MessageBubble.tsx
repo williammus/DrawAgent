@@ -21,7 +21,13 @@ export function MessageBubble({ message }: { message: UIMessage }) {
     );
   }
   if (message.kind === "error") {
-    return <ErrorBubble text={message.text ?? "发生错误"} />;
+    return (
+      <ErrorBubble
+        text={message.text ?? "发生错误"}
+        errorCode={typeof message.meta?.error_code === "string" ? message.meta.error_code : undefined}
+        summary={typeof message.meta?.error_summary === "string" ? message.meta.error_summary : null}
+      />
+    );
   }
   if (message.kind === "stage_status") {
     return (

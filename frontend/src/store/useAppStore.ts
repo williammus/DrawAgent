@@ -6,7 +6,13 @@ import type {
   StoredFileMeta,
 } from "../types/domain";
 import type { ApiErrorDetail, SseEventData } from "../types/api";
-import type { AppNotice, ComposerMode, UIMessage, WorkspaceStatus } from "../types/ui";
+import type {
+  AppNotice,
+  ComposerMode,
+  EventStreamStatus,
+  UIMessage,
+  WorkspaceStatus,
+} from "../types/ui";
 
 interface AppState {
   sessionId: string | null;
@@ -14,7 +20,7 @@ interface AppState {
   uploadedFiles: StoredFileMeta[];
   artifacts: ArtifactsBundle | null;
   latestEventId: number;
-  eventStreamConnected: boolean;
+  eventStreamStatus: EventStreamStatus;
   generatedImageUrl: string | null;
   lastError: ApiErrorDetail | null;
   messages: UIMessage[];
@@ -35,7 +41,7 @@ interface AppState {
   removeUploadedFile: (fileId: string) => void;
   setArtifacts: (artifacts: ArtifactsBundle | null) => void;
   setLatestEventId: (eventId: number) => void;
-  setEventStreamConnected: (connected: boolean) => void;
+  setEventStreamStatus: (status: EventStreamStatus) => void;
   setGeneratedImageUrl: (url: string | null) => void;
   setLastError: (error: ApiErrorDetail | null) => void;
   addMessage: (message: UIMessage) => void;
@@ -60,7 +66,7 @@ export function createInitialAppState() {
     uploadedFiles: [],
     artifacts: null,
     latestEventId: 0,
-    eventStreamConnected: false,
+    eventStreamStatus: "connecting" as EventStreamStatus,
     generatedImageUrl: null,
     lastError: null,
     messages: [] as UIMessage[],
@@ -116,9 +122,9 @@ export const useAppStore = create<AppState>((set) => ({
     set((state) => ({
       latestEventId: Math.max(state.latestEventId, eventId),
     })),
-  setEventStreamConnected: (connected) =>
+  setEventStreamStatus: (eventStreamStatus) =>
     set({
-      eventStreamConnected: connected,
+      eventStreamStatus,
     }),
   setGeneratedImageUrl: (generatedImageUrl) =>
     set({

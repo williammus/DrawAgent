@@ -211,6 +211,7 @@ def _build_orchestrator_node(
                 stage=StageName.PLANNING,
                 message="Orchestrator failed.",
                 exception=exc,
+                failing_node="orchestrator",
                 max_error_count=max_error_count,
             )
 
@@ -330,6 +331,7 @@ def _build_executor_node(
                 stage=stage,
                 message=f"{executor.agent_name} failed.",
                 exception=exc,
+                failing_node=executor.agent_name,
                 max_error_count=max_error_count,
             )
 
@@ -398,6 +400,7 @@ def _build_critic_node(
                 stage=StageName.REVIEWING,
                 message="Critic failed.",
                 exception=exc,
+                failing_node="critic",
                 max_error_count=max_error_count,
             )
 
@@ -551,6 +554,7 @@ def _build_failure_updates(
     stage: StageName,
     message: str,
     exception: Exception,
+    failing_node: str,
     max_error_count: int,
 ) -> dict[str, Any]:
     error_count = state["error_count"] + 1
@@ -565,7 +569,7 @@ def _build_failure_updates(
         stage=StageName.FAILED,
         message=message,
         error_code=_error_code_for_exception(exception),
-        details=_error_details_for_exception(exception),
+        details=_error_details_for_exception(exception, failing_node=failing_node, stage=stage),
     )
     return {
         "error_count": error_count,
@@ -704,9 +708,20 @@ def _error_code_for_exception(exception: Exception) -> ErrorCode:
     return ErrorCode.INTERNAL_SERVER_ERROR
 
 
-def _error_details_for_exception(exception: Exception) -> dict[str, Any]:
+def _error_details_for_exception(
+    exception: Exception,
+    *,
+    failing_node: str,
+    stage: StageName,
+) -> dict[str, Any]:
+    base_details: dict[str, Any] = {
+        "failing_node": failing_node,
+        "failing_stage": stage,
+        "exception_type": type(exception).__name__,
+        "error": str(exception),
+    }
     if isinstance(exception, DrawAgentError):
         if isinstance(exception.details, dict):
-            return exception.details
-        return {"details": exception.details}
-    return {"exception_type": type(exception).__name__}
+            return {**base_details, **exception.details}
+        return {**base_details, "details": exception.details}
+    return base_details

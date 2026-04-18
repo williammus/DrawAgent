@@ -4,19 +4,21 @@ import { CircleAlert, Radio, TimerReset } from "lucide-react";
 import { formatStageLabel } from "../../lib/format";
 import { useCountdown } from "../../hooks/useCountdown";
 import type { SessionSummary } from "../../types/domain";
+import type { EventStreamStatus } from "../../types/ui";
 
 interface TopStatusBarProps {
   summary: SessionSummary | null;
-  connected: boolean;
+  streamStatus: EventStreamStatus;
 }
 
-export function TopStatusBar({ summary, connected }: TopStatusBarProps) {
+export function TopStatusBar({ summary, streamStatus }: TopStatusBarProps) {
   const countdown = useCountdown(summary?.expires_at ?? null);
+  const connectionPill = getConnectionPill(streamStatus);
 
   return (
     <div className="flex flex-wrap items-center gap-3 rounded-[24px] border border-white/10 bg-panel/90 px-4 py-3 shadow-2xl shadow-black/20">
       <StatusPill label="阶段" value={summary ? formatStageLabel(summary.stage) : "初始化中"} />
-      <StatusPill label="连接" value={connected ? "SSE 已连接" : "连接中断"} tone={connected ? "success" : "warn"} />
+      <StatusPill label="连接" value={connectionPill.value} tone={connectionPill.tone} />
       <StatusPill label="剩余 TTL" value={countdown} icon={<TimerReset className="h-4 w-4" />} />
       <StatusPill
         label="错误数"
@@ -25,11 +27,34 @@ export function TopStatusBar({ summary, connected }: TopStatusBarProps) {
         icon={<CircleAlert className="h-4 w-4" />}
       />
       <div className="ml-auto hidden items-center gap-2 rounded-full border border-white/10 bg-white/[0.03] px-3 py-2 text-xs text-slate-400 md:flex">
-        <Radio className={`h-3.5 w-3.5 ${connected ? "text-emerald-300" : "text-amber-300"}`} />
+        <Radio
+          className={`h-3.5 w-3.5 ${
+            streamStatus === "connected"
+              ? "text-emerald-300"
+              : streamStatus === "disconnected"
+                ? "text-amber-300"
+                : "text-sky-300"
+          }`}
+        />
         所有阶段状态以 SSE 事件为准
       </div>
     </div>
   );
+}
+
+function getConnectionPill(
+  streamStatus: EventStreamStatus
+): { value: string; tone: "neutral" | "success" | "warn" } {
+  switch (streamStatus) {
+    case "connected":
+      return { value: "SSE 已连接", tone: "success" };
+    case "reconnecting":
+      return { value: "重连中", tone: "neutral" };
+    case "disconnected":
+      return { value: "连接中断", tone: "warn" };
+    default:
+      return { value: "连接中", tone: "neutral" };
+  }
 }
 
 function StatusPill({

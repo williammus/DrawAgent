@@ -13,6 +13,8 @@ export type MessageKind =
 
 export type ComposerMode = "default" | "clarification";
 
+export type EventStreamStatus = "connecting" | "connected" | "reconnecting" | "disconnected";
+
 export type WorkspaceStatus =
   | "bootstrapping"
   | "idle"

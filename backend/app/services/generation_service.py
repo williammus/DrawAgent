@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from copy import deepcopy
 
 from app.core.errors import DrawAgentError, InputValidationError, ResourceConflictError
@@ -10,6 +11,9 @@ from app.schemas.common import ErrorCode, GenerateStatus, StageName
 from app.schemas.events import ErrorEvent, ImageGeneratedEvent, StageCompletedEvent, StageStartedEvent
 from app.services.task_manager import SessionTaskManager
 from app.storage import SessionStore
+
+
+logger = logging.getLogger(__name__)
 
 
 class GenerationService:
@@ -68,6 +72,13 @@ class GenerationService:
         return GenerateStatus.ACCEPTED
 
     def _generate_sync(self, session_id: str, request_id: str, prompt_text: str) -> None:
+        logger.info(
+            "Starting image generation: session_id=%s request_id=%s image_provider=%s image_model=%s",
+            session_id,
+            request_id,
+            self.image_adapter.provider_name,
+            getattr(self.image_adapter, "model", None),
+        )
         self.event_store.append(
             session_id,
             StageStartedEvent(
@@ -121,6 +132,15 @@ class GenerationService:
             if isinstance(exc, DrawAgentError)
             else ErrorCode.INTERNAL_SERVER_ERROR
         )
+        error_details = {"error": str(exc)}
+        if isinstance(exc, DrawAgentError) and isinstance(exc.details, dict):
+            error_details.update(exc.details)
+        provider = getattr(self.image_adapter, "provider_name", None)
+        model = getattr(self.image_adapter, "model", None)
+        if provider:
+            error_details["provider"] = provider
+        if model:
+            error_details["model"] = model
         self.event_store.append(
             session_id,
             ErrorEvent(
@@ -129,6 +149,6 @@ class GenerationService:
                 request_id=request_id,
                 message="Image generation failed.",
                 error_code=error_code,
-                details={"error": str(exc)},
+                details=error_details,
             ),
         )

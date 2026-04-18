@@ -54,9 +54,27 @@ def test_generate_text_retries_until_success() -> None:
 def test_generate_text_wraps_final_failure() -> None:
     client = LLMClient(
         model="test-model",
+        base_url="https://example.com/v1",
         max_retries=2,
         client=FakeOpenAIClient([RuntimeError("bad"), RuntimeError("still bad")]),
     )
 
-    with pytest.raises(LLMInvocationError):
+    with pytest.raises(LLMInvocationError) as exc_info:
         client.generate_text("Return JSON")
+
+    assert exc_info.value.details["base_url"] == "https://example.com/v1"
+    assert exc_info.value.details["error"] == "still bad"
+
+
+def test_run_connectivity_diagnostic_reports_success() -> None:
+    client = LLMClient(
+        model="test-model",
+        base_url="https://example.com/v1",
+        client=FakeOpenAIClient([make_response('{"ok": true, "ping": "pong"}')]),
+    )
+
+    payload = client.run_connectivity_diagnostic()
+
+    assert payload["ok"] is True
+    assert payload["model"] == "test-model"
+    assert payload["base_url"] == "https://example.com/v1"

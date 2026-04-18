@@ -8,7 +8,7 @@ from langgraph.types import Command
 from app.core.errors import InputValidationError
 from app.graph.state import GraphState
 from app.graph.stores import WorkflowCheckpointStore, WorkflowEventStore
-from app.storage import SessionStore
+from app.storage.session_store import SessionStore
 
 
 class WorkflowRunner:

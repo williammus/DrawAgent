@@ -6,9 +6,10 @@ from copy import deepcopy
 
 from fastapi.testclient import TestClient
 
+from app.image import MockImageAdapter
 from app.main import app
 from app.schemas import FinalPromptSpec
-from app.schemas.events import StageStartedEvent
+from app.schemas.events import StageCompletedEvent, StageStartedEvent
 from app.schemas.common import StageName
 
 
@@ -46,6 +47,10 @@ def wait_until(predicate, timeout_seconds: float = 2.0) -> bool:
 
 def test_phase5_api_flow() -> None:
     with TestClient(app) as client:
+        mock_image_adapter = MockImageAdapter(client.app.state.temp_file_manager)
+        client.app.state.image_adapter = mock_image_adapter
+        client.app.state.generation_service.image_adapter = mock_image_adapter
+
         session_response = client.post("/api/session/init")
         assert session_response.status_code == 201
         session_payload = session_response.json()
@@ -138,3 +143,40 @@ def test_phase5_api_flow() -> None:
         delete_payload = delete_session_response.json()
         assert delete_payload["deleted"] is True
         assert delete_payload["cleanup"]["removed_sessions"] == [session_id]
+
+
+def test_stream_supports_after_id_replay() -> None:
+    with TestClient(app) as client:
+        session_response = client.post("/api/session/init")
+        session_id = session_response.json()["session_id"]
+
+        client.app.state.workflow_event_store.append(
+            session_id,
+            StageStartedEvent(
+                session_id=session_id,
+                stage=StageName.PLANNING,
+                request_id="req-1",
+                message="Planning started.",
+            ),
+        )
+        client.app.state.workflow_event_store.append(
+            session_id,
+            StageCompletedEvent(
+                session_id=session_id,
+                stage=StageName.LOGIC_READY,
+                request_id="req-2",
+                message="Logician completed.",
+            ),
+        )
+
+        streamed_payloads: list[dict[str, object]] = []
+        with client.stream("GET", f"/api/chat/stream/{session_id}?once=true&after_id=1") as response:
+            assert response.status_code == 200
+            for line in response.iter_lines():
+                if line.startswith("data: "):
+                    streamed_payloads.append(json.loads(line.removeprefix("data: ")))
+
+        assert len(streamed_payloads) == 1
+        assert streamed_payloads[0]["event_id"] == 2
+        assert streamed_payloads[0]["event_type"] == "stage_completed"
+        assert streamed_payloads[0]["data"]["message"] == "Logician completed."

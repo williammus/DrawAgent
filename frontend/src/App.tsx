@@ -2,7 +2,6 @@ import { useEffect } from "react";
 import { PanelRight, RotateCcw } from "lucide-react";
 import { toast } from "sonner";
 
-import { deleteSession } from "./api/session";
 import { ArtifactDrawer } from "./components/artifact/ArtifactDrawer";
 import { AttachmentTray } from "./components/chat/AttachmentTray";
 import { Composer } from "./components/chat/Composer";
@@ -28,7 +27,7 @@ function App() {
   const uploadedFiles = useAppStore((state) => state.uploadedFiles);
   const artifacts = useAppStore((state) => state.artifacts);
   const messages = useAppStore((state) => state.messages);
-  const eventStreamConnected = useAppStore((state) => state.eventStreamConnected);
+  const eventStreamStatus = useAppStore((state) => state.eventStreamStatus);
   const generatedImageUrl = useAppStore((state) => state.generatedImageUrl);
   const selectedAttachmentIds = useAppStore((state) => state.selectedAttachmentIds);
   const artifactDrawerOpen = useAppStore((state) => state.artifactDrawerOpen);
@@ -71,18 +70,6 @@ function App() {
     setNotice(null);
   }, [notice, setNotice]);
 
-  useEffect(() => {
-    if (!sessionId) {
-      return;
-    }
-
-    return () => {
-      void deleteSession(sessionId).catch(() => {
-        // Best-effort cleanup when the page is closed or replaced.
-      });
-    };
-  }, [sessionId]);
-
   const handleToggleAttachment = (fileId: string) => {
     if (selectedAttachmentIds.length === 0) {
       setSelectedAttachmentIds(uploadedFiles.filter((file) => file.file_id !== fileId).map((file) => file.file_id));
@@ -116,7 +103,7 @@ function App() {
         />
       }
       sidebar={<LeftSidebar onRestart={() => void restartSession()} summary={summary} uploadedFiles={uploadedFiles} />}
-      statusBar={<TopStatusBar connected={eventStreamConnected} summary={summary} />}
+      statusBar={<TopStatusBar streamStatus={eventStreamStatus} summary={summary} />}
     >
       <div className="h-full min-h-0">
         <section className="flex h-full min-h-0 flex-col">
