@@ -10,8 +10,11 @@ PROMPT_ROOT = Path(__file__).resolve().parent
 
 
 PROMPT_MANIFEST: dict[str, dict[str, str]] = {
-    "orchestrator": {"v1": "orchestrator/v1.md"},
-    "logician": {"v2_json": "logician/v2_json.md"},
+    "orchestrator": {
+        "v1": "orchestrator/v1.md",
+        "v2": "orchestrator/v2.md",
+    },
+    "logician": {"v1": "logician/v1.md"},
     "style_configurator": {"v1": "style_configurator/v1.md"},
     "visual_mapper": {"v1": "visual_mapper/v1.md"},
     "critic": {"v1": "critic/v1.md"},
@@ -19,8 +22,8 @@ PROMPT_MANIFEST: dict[str, dict[str, str]] = {
 }
 
 DEFAULT_PROMPT_VERSIONS: dict[str, str] = {
-    "orchestrator": "v1",
-    "logician": "v2_json",
+    "orchestrator": "v2",
+    "logician": "v1",
     "style_configurator": "v1",
     "visual_mapper": "v1",
     "critic": "v1",

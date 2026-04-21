@@ -1,27 +1,27 @@
 from __future__ import annotations
 
-from pydantic import ConfigDict, Field, model_validator
+from pydantic import ConfigDict, model_validator
 
 from app.schemas.artifacts import StrictModel
-from app.schemas.common import IntentType, NodeName
+from app.schemas.common import IntentType
+from app.schemas.tools import ToolCallSpec
 
 
 class OrchestratorDecisionSpec(StrictModel):
     model_config = ConfigDict(extra="forbid")
 
     intent: IntentType
-    requires_clarification: bool
-    clarification_question: str | None = None
-    selected_nodes: list[NodeName] = Field(default_factory=list)
-    reason: str
-    user_message: str
+    tool_calls: list[ToolCallSpec]
+    response_message: str
+    finish: bool = False
+    finish_reason: str | None = None
 
     @model_validator(mode="after")
-    def validate_clarification_fields(self) -> "OrchestratorDecisionSpec":
-        if self.requires_clarification and not self.clarification_question:
-            raise ValueError("clarification_question is required when requires_clarification is true.")
-
-        if self.requires_clarification and self.selected_nodes:
-            raise ValueError("selected_nodes must be empty when clarification is required.")
-
+    def validate_completion_shape(self) -> "OrchestratorDecisionSpec":
+        if self.finish and self.tool_calls:
+            raise ValueError("tool_calls must be empty when finish is true.")
+        if not self.finish and not self.tool_calls:
+            raise ValueError("tool_calls are required when finish is false.")
+        if self.finish and not self.finish_reason:
+            raise ValueError("finish_reason is required when finish is true.")
         return self

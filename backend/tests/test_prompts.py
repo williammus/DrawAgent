@@ -5,13 +5,14 @@ from app.knowledge import StyleKnowledgeProvider
 from app.prompts import PromptRegistry, PromptRenderer
 
 
-def test_prompt_registry_loads_default_prompt_text() -> None:
+def test_prompt_registry_loads_orchestrator_v2_by_default() -> None:
     registry = PromptRegistry()
 
-    prompt_text = registry.load_text("summary")
+    prompt_text = registry.load_text("orchestrator")
 
-    assert "Summary Agent" in prompt_text
-    assert registry.available_versions("logician") == ("v2_json",)
+    assert "原生 tool calling" in prompt_text or "tool calling" in prompt_text
+    assert registry.available_versions("orchestrator") == ("v1", "v2")
+    assert registry.available_versions("logician") == ("v1",)
 
 
 def test_prompt_renderer_rejects_missing_variables() -> None:

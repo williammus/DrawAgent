@@ -5,22 +5,34 @@ from app.agents import (
     StyleConfiguratorExecutor,
     SummaryExecutor,
     VisualMapperExecutor,
+    build_agent_runtime,
 )
+from app.core.settings import Settings
 from app.graph.state import build_initial_graph_state
 from app.knowledge import StyleKnowledgeProvider
 from app.prompts import PromptRegistry, PromptRenderer
 from app.schemas import FinalPromptSpec, LogicSpec, MapperSpec, ReviewSpec, StyleSpec
 from app.schemas.common import ReviewErrorStage, StageName
+from app.schemas.tools import ToolKind
+from app.tools import ToolRegistration, ToolRegistry
 
 
 class FakeLLMClient:
-    def __init__(self, responses):
-        self.responses = list(responses)
+    def __init__(self, json_responses=None, tool_call_responses=None):
+        self.json_responses = list(json_responses or [])
+        self.tool_call_responses = list(tool_call_responses or [])
         self.prompts: list[str] = []
 
     def generate_json(self, prompt: str, **kwargs):
         self.prompts.append(prompt)
-        response = self.responses.pop(0)
+        response = self.json_responses.pop(0)
+        if isinstance(response, Exception):
+            raise response
+        return response
+
+    def generate_tool_calls(self, prompt: str, **kwargs):
+        self.prompts.append(prompt)
+        response = self.tool_call_responses.pop(0)
         if isinstance(response, Exception):
             raise response
         return response
@@ -90,38 +102,74 @@ def build_review_payload(passed: bool = True) -> ReviewSpec:
     )
 
 
-def test_orchestrator_executor_returns_structured_decision() -> None:
+def build_tool_registry() -> ToolRegistry:
+    registry = ToolRegistry()
+    registry.register(
+        ToolRegistration(
+            tool_name="ask_clarification",
+            kind=ToolKind.CONTROL,
+            description="Clarify missing information.",
+            parameters_schema={"type": "object"},
+        )
+    )
+    registry.register(
+        ToolRegistration(
+            tool_name="logician_tool",
+            kind=ToolKind.BUSINESS,
+            description="Extract logic.",
+            parameters_schema={"type": "object"},
+        )
+    )
+    registry.register(
+        ToolRegistration(
+            tool_name="style_configurator_tool",
+            kind=ToolKind.BUSINESS,
+            description="Build style spec.",
+            parameters_schema={"type": "object"},
+        )
+    )
+    return registry
+
+
+def test_orchestrator_executor_returns_tool_call_decision() -> None:
     state = build_state_with_inputs()
     fake_llm = FakeLLMClient(
-        [
+        tool_call_responses=[
             {
-                "intent": "new_task",
-                "requires_clarification": False,
-                "clarification_question": None,
-                "selected_nodes": [
-                    "logician",
-                    "style_configurator",
-                    "visual_mapper",
-                    "critic",
-                    "summary",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "call_id": "call_1",
+                        "tool_name": "logician_tool",
+                        "arguments": {"request_note": "extract logic"},
+                    },
+                    {
+                        "call_id": "call_2",
+                        "tool_name": "style_configurator_tool",
+                        "arguments": {},
+                    },
                 ],
-                "reason": "The user provided a new drawing request.",
-                "user_message": "开始处理。",
             }
         ]
     )
-    executor = OrchestratorExecutor(**build_common_kwargs(fake_llm))
+    executor = OrchestratorExecutor(
+        llm_client=fake_llm,
+        prompt_registry=PromptRegistry(),
+        prompt_renderer=PromptRenderer(),
+        tool_registry=build_tool_registry(),
+    )
 
     updates = executor.run(state)
 
     assert updates["stage"] == StageName.PLANNING
-    assert updates["orchestrator_decision"].selected_nodes[0] == "logician"
+    assert updates["orchestrator_decision"].tool_calls[0].tool_name == "logician_tool"
+    assert updates["pending_tool_calls"][1].tool_name == "style_configurator_tool"
 
 
 def test_logician_executor_returns_logic_payload() -> None:
     state = build_state_with_inputs()
     fake_llm = FakeLLMClient(
-        [
+        json_responses=[
             {
                 "chart_title": "Pipeline",
                 "core_method_summary": "Encoder to decoder.",
@@ -142,7 +190,7 @@ def test_logician_executor_returns_logic_payload() -> None:
 def test_style_configurator_executor_uses_knowledge_pack() -> None:
     state = build_state_with_inputs()
     fake_llm = FakeLLMClient(
-        [
+        json_responses=[
             {
                 "discipline": "computer vision",
                 "target_journal": "CVPR",
@@ -174,7 +222,7 @@ def test_visual_mapper_executor_returns_mapper_payload() -> None:
     state["payload_logic"] = build_logic_payload()
     state["payload_style"] = build_style_payload()
     fake_llm = FakeLLMClient(
-        [
+        json_responses=[
             {
                 "narrative_direction": "left-to-right",
                 "section_layout": ["input", "output"],
@@ -201,7 +249,7 @@ def test_critic_executor_returns_failed_review_payload() -> None:
     state["payload_style"] = build_style_payload()
     state["payload_mapper"] = build_mapper_payload()
     fake_llm = FakeLLMClient(
-        [
+        json_responses=[
             {
                 "passed": False,
                 "error_stage": "visual_mapper",
@@ -225,7 +273,7 @@ def test_summary_executor_returns_final_prompt_payload() -> None:
     state["payload_mapper"] = build_mapper_payload()
     state["payload_review"] = build_review_payload()
     fake_llm = FakeLLMClient(
-        [
+        json_responses=[
             {
                 "final_prompt_en": "A professional, scientific diagram in the style of a top-tier conference.",
                 "final_prompt_cn": "顶会风格科研示意图。",
@@ -242,3 +290,25 @@ def test_summary_executor_returns_final_prompt_payload() -> None:
     assert isinstance(updates["payload_final"], FinalPromptSpec)
     assert updates["stage"] == StageName.PROMPT_READY
     assert updates["payload_final"].ready_for_generation is True
+
+
+def test_build_agent_runtime_registers_tools_without_prebuilding_business_agents() -> None:
+    runtime = build_agent_runtime(
+        Settings(),
+        llm_client=FakeLLMClient(),
+        prompt_registry=PromptRegistry(),
+        prompt_renderer=PromptRenderer(),
+        style_knowledge_provider=StyleKnowledgeProvider(),
+    )
+
+    assert hasattr(runtime, "orchestrator")
+    assert hasattr(runtime, "tool_registry")
+    assert runtime.tool_registry.names() == (
+        "ask_clarification",
+        "critic_tool",
+        "logician_tool",
+        "style_configurator_tool",
+        "summary_tool",
+        "visual_mapper_tool",
+    )
+    assert not hasattr(runtime, "logician")

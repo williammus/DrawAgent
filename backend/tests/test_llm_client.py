@@ -2,7 +2,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from app.core.errors import LLMInvocationError
+from app.core.errors import ArtifactValidationError, LLMInvocationError
 from app.llm import LLMClient
 
 
@@ -22,9 +22,23 @@ class FakeOpenAIClient:
         self.chat = SimpleNamespace(completions=FakeCompletions(responses))
 
 
-def make_response(content: str):
+def make_response(content: str, tool_calls: list[object] | None = None):
     return SimpleNamespace(
-        choices=[SimpleNamespace(message=SimpleNamespace(content=content))]
+        choices=[
+            SimpleNamespace(
+                message=SimpleNamespace(
+                    content=content,
+                    tool_calls=tool_calls or [],
+                )
+            )
+        ]
+    )
+
+
+def make_tool_call(call_id: str, name: str, arguments: str):
+    return SimpleNamespace(
+        id=call_id,
+        function=SimpleNamespace(name=name, arguments=arguments),
     )
 
 
@@ -64,6 +78,53 @@ def test_generate_text_wraps_final_failure() -> None:
 
     assert exc_info.value.details["base_url"] == "https://example.com/v1"
     assert exc_info.value.details["error"] == "still bad"
+
+
+def test_generate_tool_calls_extracts_openai_function_calls() -> None:
+    client = LLMClient(
+        model="test-model",
+        client=FakeOpenAIClient(
+            [
+                make_response(
+                    "",
+                    tool_calls=[
+                        make_tool_call(
+                            "call_1",
+                            "logician_tool",
+                            '{"request_note":"extract structure"}',
+                        )
+                    ],
+                )
+            ]
+        ),
+    )
+
+    payload = client.generate_tool_calls("Plan", tools=[])
+
+    assert payload["tool_calls"] == [
+        {
+            "call_id": "call_1",
+            "tool_name": "logician_tool",
+            "arguments": {"request_note": "extract structure"},
+        }
+    ]
+
+
+def test_generate_tool_calls_rejects_invalid_arguments_json() -> None:
+    client = LLMClient(
+        model="test-model",
+        client=FakeOpenAIClient(
+            [
+                make_response(
+                    "",
+                    tool_calls=[make_tool_call("call_1", "logician_tool", '{"bad": ')],
+                )
+            ]
+        ),
+    )
+
+    with pytest.raises(ArtifactValidationError):
+        client.generate_tool_calls("Plan", tools=[])
 
 
 def test_run_connectivity_diagnostic_reports_success() -> None:

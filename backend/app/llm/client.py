@@ -105,7 +105,7 @@ class LLMClient:
                         },
                     )
                 return content
-            except LLMInvocationError:
+            except (LLMInvocationError, ArtifactValidationError):
                 raise
             except Exception as exc:
                 last_error = exc
@@ -163,6 +163,70 @@ class LLMClient:
             )
 
         return dict(parsed)
+
+    def generate_tool_calls(
+        self,
+        prompt: str,
+        *,
+        tools: list[dict[str, Any]],
+        system_prompt: str | None = None,
+        model: str | None = None,
+        temperature: float = 0.0,
+    ) -> dict[str, Any]:
+        resolved_model = model or self.model
+        if not resolved_model:
+            raise LLMInvocationError(
+                "LLM model is not configured.",
+                details={"model": resolved_model, "base_url": self.base_url or None},
+            )
+
+        messages: list[dict[str, str]] = []
+        if system_prompt:
+            messages.append({"role": "system", "content": system_prompt})
+        messages.append({"role": "user", "content": prompt})
+
+        last_error: Exception | None = None
+        for attempt in range(1, self.max_retries + 1):
+            try:
+                logger.info(
+                    "Invoking LLM tool-calling request model=%s base_url=%s attempt=%s",
+                    resolved_model,
+                    self.base_url or "-",
+                    attempt,
+                )
+                response = self._get_client().chat.completions.create(
+                    model=resolved_model,
+                    messages=messages,
+                    temperature=temperature,
+                    tools=tools,
+                    tool_choice="auto",
+                )
+                return {
+                    "content": self._extract_content(response),
+                    "tool_calls": self._extract_tool_calls(response),
+                }
+            except (LLMInvocationError, ArtifactValidationError):
+                raise
+            except Exception as exc:
+                last_error = exc
+                logger.warning(
+                    "LLM tool-calling request failed model=%s base_url=%s attempt=%s error_type=%s error=%s",
+                    resolved_model,
+                    self.base_url or "-",
+                    attempt,
+                    type(exc).__name__,
+                    exc,
+                )
+
+        raise LLMInvocationError(
+            "LLM tool-calling invocation failed after retries.",
+            details={
+                "model": resolved_model,
+                "base_url": self.base_url or None,
+                "attempts": self.max_retries,
+                **self._serialize_exception(last_error),
+            },
+        ) from last_error
 
     def run_connectivity_diagnostic(
         self,
@@ -230,6 +294,75 @@ class LLMClient:
             return "\n".join(parts)
 
         return str(content or "")
+
+    def _extract_tool_calls(self, response: Any) -> list[dict[str, Any]]:
+        choices = getattr(response, "choices", None)
+        if not choices:
+            return []
+
+        message = getattr(choices[0], "message", None)
+        if message is None:
+            return []
+
+        raw_tool_calls = getattr(message, "tool_calls", None) or []
+        extracted: list[dict[str, Any]] = []
+        for tool_call in raw_tool_calls:
+            function_payload = getattr(tool_call, "function", None)
+            if function_payload is None and isinstance(tool_call, Mapping):
+                function_payload = tool_call.get("function")
+
+            name = getattr(function_payload, "name", None)
+            if name is None and isinstance(function_payload, Mapping):
+                name = function_payload.get("name")
+            if not name:
+                continue
+
+            raw_arguments = getattr(function_payload, "arguments", None)
+            if raw_arguments is None and isinstance(function_payload, Mapping):
+                raw_arguments = function_payload.get("arguments")
+            parsed_arguments = self._parse_tool_arguments(raw_arguments)
+
+            call_id = getattr(tool_call, "id", None)
+            if call_id is None and isinstance(tool_call, Mapping):
+                call_id = tool_call.get("id")
+
+            extracted.append(
+                {
+                    "call_id": str(call_id or f"call_{len(extracted) + 1}"),
+                    "tool_name": str(name),
+                    "arguments": parsed_arguments,
+                }
+            )
+
+        return extracted
+
+    def _parse_tool_arguments(self, arguments: Any) -> dict[str, Any]:
+        if arguments is None:
+            return {}
+        if isinstance(arguments, Mapping):
+            return dict(arguments)
+        if isinstance(arguments, str):
+            stripped = arguments.strip()
+            if not stripped:
+                return {}
+            try:
+                payload = json.loads(stripped)
+            except json.JSONDecodeError as exc:
+                raise ArtifactValidationError(
+                    "LLM returned invalid tool arguments JSON.",
+                    details={"arguments": arguments},
+                ) from exc
+            if not isinstance(payload, Mapping):
+                raise ArtifactValidationError(
+                    "LLM returned tool arguments but not an object.",
+                    details={"arguments": arguments, "parsed_type": type(payload).__name__},
+                )
+            return dict(payload)
+
+        raise ArtifactValidationError(
+            "LLM returned unsupported tool arguments format.",
+            details={"arguments_type": type(arguments).__name__},
+        )
 
     def _extract_json_candidate(self, text: str) -> str:
         stripped = text.strip()

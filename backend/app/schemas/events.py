@@ -36,6 +36,8 @@ class StageCompletedEvent(BaseEvent):
 class ClarificationRequiredEvent(BaseEvent):
     event_type: Literal[EventType.CLARIFICATION_REQUIRED] = EventType.CLARIFICATION_REQUIRED
     clarification_question: str
+    reason: str | None = None
+    expected_fields: list[str] = Field(default_factory=list)
 
 
 class ReviewFailedEvent(BaseEvent):

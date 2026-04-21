@@ -5,6 +5,7 @@ from typing import Any, Annotated, TypedDict, cast
 from langchain_core.messages import AnyMessage
 from langgraph.graph.message import add_messages
 
+from app.schemas.agents import OrchestratorDecisionSpec
 from app.schemas.artifacts import (
     FinalPromptSpec,
     GeneratedImageMeta,
@@ -14,8 +15,8 @@ from app.schemas.artifacts import (
     StoredFileMeta,
     StyleSpec,
 )
-from app.schemas.agents import OrchestratorDecisionSpec
 from app.schemas.common import IntentType, StageName
+from app.schemas.tools import ClarificationRequestSpec, ToolCallSpec, ToolExecutionTraceItem
 
 
 class GraphState(TypedDict):
@@ -28,8 +29,10 @@ class GraphState(TypedDict):
     source_files: list[StoredFileMeta]
     research_context: dict[str, Any] | None
     user_feedback: str | None
-    pending_clarification_question: str | None
     orchestrator_decision: OrchestratorDecisionSpec | None
+    pending_tool_calls: list[ToolCallSpec]
+    tool_execution_trace: list[ToolExecutionTraceItem]
+    active_clarification: ClarificationRequestSpec | None
     payload_logic: LogicSpec | None
     payload_style: StyleSpec | None
     payload_mapper: MapperSpec | None
@@ -41,7 +44,6 @@ class GraphState(TypedDict):
     last_error: str | None
     needs_clarification: bool
     interrupted: bool
-    rollback_target: str | None
     user_confirmed: bool
 
 
@@ -58,8 +60,10 @@ def build_initial_graph_state(session_id: str) -> GraphState:
             "source_files": [],
             "research_context": None,
             "user_feedback": None,
-            "pending_clarification_question": None,
             "orchestrator_decision": None,
+            "pending_tool_calls": [],
+            "tool_execution_trace": [],
+            "active_clarification": None,
             "payload_logic": None,
             "payload_style": None,
             "payload_mapper": None,
@@ -71,7 +75,6 @@ def build_initial_graph_state(session_id: str) -> GraphState:
             "last_error": None,
             "needs_clarification": False,
             "interrupted": False,
-            "rollback_target": None,
             "user_confirmed": False,
         },
     )

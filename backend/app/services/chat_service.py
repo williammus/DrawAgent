@@ -45,7 +45,8 @@ class ChatService:
 
         selected_files = self.session_service.resolve_attachments(session_id, attachment_ids)
         state = self.session_service.set_active_source_files(session_id, selected_files)
-        operation = "resume_workflow" if state["interrupted"] else "run_workflow"
+        waiting_for_resume = self.workflow_runner.is_waiting_for_resume(session_id)
+        operation = "resume_workflow" if waiting_for_resume else "run_workflow"
 
         async def run_in_background() -> None:
             try:
@@ -54,14 +55,19 @@ class ChatService:
                         self.workflow_runner.resume,
                         session_id,
                         request_id,
-                        message,
+                        user_feedback=message,
                     )
                 else:
+                    input_payload = (
+                        {"source_text": message}
+                        if state["source_text"] is None
+                        else {"user_feedback": message}
+                    )
                     await asyncio.to_thread(
                         self.workflow_runner.run,
                         session_id,
                         request_id,
-                        message,
+                        **input_payload,
                     )
             except Exception as exc:
                 self._record_background_failure(session_id, request_id, exc)
@@ -85,6 +91,8 @@ class ChatService:
         state["last_error"] = str(exc)
         state["needs_clarification"] = False
         state["interrupted"] = False
+        state["pending_tool_calls"] = []
+        state["active_clarification"] = None
         self.session_store.update_state(session_id, state)
 
         error_code = (

@@ -3,29 +3,33 @@ from __future__ import annotations
 from datetime import timedelta
 from pathlib import Path
 from shutil import rmtree
+from types import SimpleNamespace
 from uuid import uuid4
 from typing import Any
 
-from app.agents import AgentRuntime
-from app.core.errors import LLMInvocationError
 from app.graph import (
     WorkflowCheckpointStore,
     WorkflowEventStore,
     WorkflowRunner,
-    build_initial_graph_state,
     build_workflow_app,
 )
 from app.schemas import (
+    ClarificationRequestSpec,
     FinalPromptSpec,
     LogicSpec,
     MapperSpec,
     OrchestratorDecisionSpec,
     ReviewSpec,
     StyleSpec,
+    ToolCallSpec,
+    ToolExecutionStatus,
+    ToolExecutionTraceItem,
 )
-from app.schemas.common import EventType, IntentType, NodeName, ReviewErrorStage, StageName
+from app.schemas.common import EventType, IntentType, StageName
 from app.storage import CleanupService, SessionStore, TempFileManager
 from app.storage.session_store import utc_now
+from app.tools import ToolExecutionOutcome, ToolRegistration, ToolRegistry
+from app.schemas.tools import ToolKind
 
 
 TEST_TEMP_ROOT = Path(__file__).resolve().parents[1] / ".test_tmp"
@@ -38,20 +42,29 @@ def make_temp_dir(name: str) -> Path:
     return path
 
 
-class StubExecutor:
-    def __init__(self, agent_name: str, responses: list[Any]) -> None:
-        self.agent_name = agent_name
+class StubOrchestrator:
+    def __init__(self, responses: list[dict[str, Any] | Exception]) -> None:
         self.responses = list(responses)
         self.calls = 0
 
     def run(self, state: dict[str, Any]) -> dict[str, Any]:
         self.calls += 1
         response = self.responses.pop(0)
-        if callable(response):
-            return response(state, self.calls)
         if isinstance(response, Exception):
             raise response
         return response
+
+
+class StubBusinessExecutor:
+    def __init__(self, updates: dict[str, Any] | Exception) -> None:
+        self.updates = updates
+        self.calls = 0
+
+    def run(self, state: dict[str, Any]) -> dict[str, Any]:
+        self.calls += 1
+        if isinstance(self.updates, Exception):
+            raise self.updates
+        return self.updates
 
 
 def build_logic_payload(version: str = "v1") -> LogicSpec:
@@ -93,15 +106,12 @@ def build_mapper_payload(version: str = "v1") -> MapperSpec:
     )
 
 
-def build_review_payload(
-    passed: bool = True,
-    error_stage: ReviewErrorStage | None = None,
-) -> ReviewSpec:
+def build_review_payload(passed: bool = True) -> ReviewSpec:
     return ReviewSpec(
         passed=passed,
-        error_stage=error_stage,
+        error_stage=None,
         reason="No conflicts found." if passed else "Modules overlap visually.",
-        fix_suggestion=[] if passed else ["Increase spacing."],
+        fix_suggestion=[],
     )
 
 
@@ -115,50 +125,112 @@ def build_final_payload(version: str = "v1") -> FinalPromptSpec:
     )
 
 
-def build_orchestrator_update(
+def decision_updates(
     *,
     intent: IntentType,
-    selected_nodes: list[NodeName],
-    requires_clarification: bool = False,
-    clarification_question: str | None = None,
-    user_message: str = "继续执行。",
+    tool_calls: list[ToolCallSpec],
+    finish: bool = False,
+    response_message: str = "继续执行。",
+    stage: StageName = StageName.PLANNING,
 ) -> dict[str, Any]:
+    decision = OrchestratorDecisionSpec(
+        intent=intent,
+        tool_calls=tool_calls,
+        response_message=response_message,
+        finish=finish,
+        finish_reason="completed" if finish else None,
+    )
     return {
-        "orchestrator_decision": OrchestratorDecisionSpec(
-            intent=intent,
-            requires_clarification=requires_clarification,
-            clarification_question=clarification_question,
-            selected_nodes=selected_nodes,
-            reason="Structured route selected.",
-            user_message=user_message,
-        ),
-        "intent": intent,
-        "needs_clarification": requires_clarification,
-        "stage": StageName.CLARIFYING if requires_clarification else StageName.PLANNING,
+        "orchestrator_decision": decision,
+        "intent": decision.intent,
+        "pending_tool_calls": decision.tool_calls,
+        "stage": stage,
         "last_error": None,
     }
 
 
-def build_runtime(
-    *,
-    orchestrator: StubExecutor,
-    logician: StubExecutor,
-    style_configurator: StubExecutor,
-    visual_mapper: StubExecutor,
-    critic: StubExecutor,
-    summary: StubExecutor,
-) -> AgentRuntime:
-    return AgentRuntime(
-        orchestrator=orchestrator,
-        logician=logician,
-        style_configurator=style_configurator,
-        visual_mapper=visual_mapper,
-        critic=critic,
-        summary=summary,
+def business_call(call_id: str, tool_name: str) -> ToolCallSpec:
+    return ToolCallSpec(call_id=call_id, tool_name=tool_name, arguments={})
+
+
+def clarification_call(call_id: str, question: str) -> ToolCallSpec:
+    return ToolCallSpec(
+        call_id=call_id,
+        tool_name="ask_clarification",
+        arguments=ClarificationRequestSpec(
+            question=question,
+            reason="Missing source details.",
+            expected_fields=["source_text"],
+        ).model_dump(mode="json"),
     )
 
 
-def build_workflow_components(runtime: AgentRuntime, max_error_count: int = 3):
+def build_runtime(
+    *,
+    orchestrator: StubOrchestrator,
+    tool_registry: ToolRegistry,
+    tool_executor: Any,
+):
+    return SimpleNamespace(
+        orchestrator=orchestrator,
+        tool_registry=tool_registry,
+        tool_executor=tool_executor,
+    )
+
+
+class StubToolExecutor:
+    def __init__(self, outcomes: dict[str, list[ToolExecutionOutcome]]) -> None:
+        self.outcomes = {key: list(value) for key, value in outcomes.items()}
+        self.calls: list[str] = []
+
+    def execute_business_call(self, state: dict[str, Any], tool_call: ToolCallSpec) -> ToolExecutionOutcome:
+        self.calls.append(tool_call.tool_name)
+        return self.outcomes[tool_call.tool_name].pop(0)
+
+
+def success_outcome(tool_call: ToolCallSpec, updates: dict[str, Any]) -> ToolExecutionOutcome:
+    return ToolExecutionOutcome(
+        state_updates=updates,
+        trace_item=ToolExecutionTraceItem(
+            call_id=tool_call.call_id,
+            tool_name=tool_call.tool_name,
+            status=ToolExecutionStatus.SUCCEEDED,
+        ),
+    )
+
+
+def build_tool_registry() -> ToolRegistry:
+    registry = ToolRegistry()
+    registry.register(
+        ToolRegistration(
+            tool_name="ask_clarification",
+            kind=ToolKind.CONTROL,
+            description="Request clarification.",
+            parameters_schema={"type": "object"},
+            progress_stage=StageName.CLARIFYING,
+        )
+    )
+    for tool_name, stage in (
+        ("logician_tool", StageName.LOGIC_READY),
+        ("style_configurator_tool", StageName.STYLE_READY),
+        ("visual_mapper_tool", StageName.MAPPING_READY),
+        ("critic_tool", StageName.REVIEWING),
+        ("summary_tool", StageName.PROMPT_READY),
+    ):
+        registry.register(
+            ToolRegistration(
+                tool_name=tool_name,
+                kind=ToolKind.BUSINESS,
+                description=tool_name,
+                parameters_schema={"type": "object"},
+                progress_stage=stage,
+                executor_factory=lambda: None,
+            )
+        )
+    return registry
+
+
+def build_workflow_components(runtime: Any, max_error_count: int = 3):
     session_store = SessionStore(ttl_seconds=30)
     checkpoint_store = WorkflowCheckpointStore()
     event_store = WorkflowEventStore()
@@ -177,430 +249,170 @@ def build_workflow_components(runtime: AgentRuntime, max_error_count: int = 3):
     return session_store, checkpoint_store, event_store, workflow_app, runner
 
 
-def test_workflow_runner_completes_new_task_path() -> None:
-    runtime = build_runtime(
-        orchestrator=StubExecutor(
-            "orchestrator",
-            [
-                build_orchestrator_update(
-                    intent=IntentType.NEW_TASK,
-                    selected_nodes=[
-                        NodeName.LOGICIAN,
-                        NodeName.STYLE_CONFIGURATOR,
-                        NodeName.VISUAL_MAPPER,
-                        NodeName.CRITIC,
-                        NodeName.SUMMARY,
-                    ],
-                )
+def test_workflow_runner_completes_dual_node_new_task_path() -> None:
+    registry = build_tool_registry()
+    first_calls = [business_call("call_1", "logician_tool"), business_call("call_2", "style_configurator_tool")]
+    second_calls = [business_call("call_3", "visual_mapper_tool")]
+    third_calls = [business_call("call_4", "critic_tool")]
+    fourth_calls = [business_call("call_5", "summary_tool")]
+    tool_executor = StubToolExecutor(
+        outcomes={
+            "logician_tool": [
+                success_outcome(first_calls[0], {"payload_logic": build_logic_payload(), "stage": StageName.LOGIC_READY, "last_error": None})
             ],
-        ),
-        logician=StubExecutor(
-            "logician",
-            [{"payload_logic": build_logic_payload(), "stage": StageName.LOGIC_READY, "last_error": None}],
-        ),
-        style_configurator=StubExecutor(
-            "style_configurator",
-            [{"payload_style": build_style_payload(), "stage": StageName.STYLE_READY, "last_error": None}],
-        ),
-        visual_mapper=StubExecutor(
-            "visual_mapper",
-            [{"payload_mapper": build_mapper_payload(), "stage": StageName.MAPPING_READY, "last_error": None}],
-        ),
-        critic=StubExecutor(
-            "critic",
-            [{"payload_review": build_review_payload(), "stage": StageName.REVIEWING, "last_error": None}],
-        ),
-        summary=StubExecutor(
-            "summary",
-            [{"payload_final": build_final_payload(), "stage": StageName.PROMPT_READY, "last_error": None}],
-        ),
+            "style_configurator_tool": [
+                success_outcome(first_calls[1], {"payload_style": build_style_payload(), "stage": StageName.STYLE_READY, "last_error": None})
+            ],
+            "visual_mapper_tool": [
+                success_outcome(second_calls[0], {"payload_mapper": build_mapper_payload(), "stage": StageName.MAPPING_READY, "last_error": None})
+            ],
+            "critic_tool": [
+                success_outcome(third_calls[0], {"payload_review": build_review_payload(), "stage": StageName.REVIEWING, "last_error": None})
+            ],
+            "summary_tool": [
+                success_outcome(fourth_calls[0], {"payload_final": build_final_payload(), "stage": StageName.PROMPT_READY, "last_error": None})
+            ],
+        }
+    )
+    runtime = build_runtime(
+        orchestrator=StubOrchestrator(
+                [
+                    decision_updates(intent=IntentType.NEW_TASK, tool_calls=first_calls),
+                    decision_updates(intent=IntentType.NEW_TASK, tool_calls=second_calls),
+                    decision_updates(intent=IntentType.NEW_TASK, tool_calls=third_calls),
+                    decision_updates(intent=IntentType.NEW_TASK, tool_calls=fourth_calls),
+                    decision_updates(
+                        intent=IntentType.NEW_TASK,
+                        tool_calls=[],
+                        finish=True,
+                        response_message="流程完成",
+                        stage=StageName.PROMPT_READY,
+                    ),
+                ]
+            ),
+        tool_registry=registry,
+        tool_executor=tool_executor,
     )
     session_store, _, event_store, _, runner = build_workflow_components(runtime)
-    state = build_initial_graph_state("session-new")
-    state["source_text"] = "Encoder decoder pipeline."
-    session_store.create_session("session-new", state)
+    session_store.create_session("session-new")
 
-    final_state = runner.run("session-new", "req-1")
+    final_state = runner.run("session-new", "req-1", source_text="Encoder decoder pipeline.")
 
     assert final_state["stage"] == StageName.PROMPT_READY
     assert final_state["payload_final"].ready_for_generation is True
-    assert runtime.logician.calls == 1
-    assert runtime.style_configurator.calls == 1
-    assert runtime.visual_mapper.calls == 1
-    assert runtime.critic.calls == 1
-    assert runtime.summary.calls == 1
+    assert runtime.orchestrator.calls == 5
+    assert tool_executor.calls == [
+        "logician_tool",
+        "style_configurator_tool",
+        "visual_mapper_tool",
+        "critic_tool",
+        "summary_tool",
+    ]
+    assert [item.tool_name for item in final_state["tool_execution_trace"]] == tool_executor.calls
     event_types = [event.event_type for event in event_store.list_events("session-new")]
-    assert event_types[0] == EventType.STAGE_STARTED
     assert EventType.PROMPT_READY in event_types
 
 
-def test_workflow_runner_replays_only_logic_branch_for_modify_logic() -> None:
-    runtime = build_runtime(
-        orchestrator=StubExecutor(
-            "orchestrator",
-            [
-                build_orchestrator_update(
-                    intent=IntentType.MODIFY_LOGIC,
-                    selected_nodes=[
-                        NodeName.LOGICIAN,
-                        NodeName.VISUAL_MAPPER,
-                        NodeName.CRITIC,
-                        NodeName.SUMMARY,
-                    ],
-                )
-            ],
-        ),
-        logician=StubExecutor(
-            "logician",
-            [{"payload_logic": build_logic_payload("v2"), "stage": StageName.LOGIC_READY, "last_error": None}],
-        ),
-        style_configurator=StubExecutor("style_configurator", []),
-        visual_mapper=StubExecutor(
-            "visual_mapper",
-            [{"payload_mapper": build_mapper_payload("v2"), "stage": StageName.MAPPING_READY, "last_error": None}],
-        ),
-        critic=StubExecutor(
-            "critic",
-            [{"payload_review": build_review_payload(), "stage": StageName.REVIEWING, "last_error": None}],
-        ),
-        summary=StubExecutor(
-            "summary",
-            [{"payload_final": build_final_payload("v2"), "stage": StageName.PROMPT_READY, "last_error": None}],
-        ),
+def test_workflow_runner_interrupts_and_resumes_for_control_tool() -> None:
+    registry = build_tool_registry()
+    post_resume_calls = [business_call("call_2", "logician_tool")]
+    tool_executor = StubToolExecutor(
+        outcomes={
+            "logician_tool": [
+                success_outcome(post_resume_calls[0], {"payload_logic": build_logic_payload(), "stage": StageName.LOGIC_READY, "last_error": None})
+            ]
+        }
     )
-    session_store, _, _, _, runner = build_workflow_components(runtime)
-    state = build_initial_graph_state("session-modify-logic")
-    state["source_text"] = "Original task."
-    state["user_feedback"] = "Add an extra module."
-    state["payload_logic"] = build_logic_payload("v1")
-    state["payload_style"] = build_style_payload("v1")
-    state["payload_mapper"] = build_mapper_payload("v1")
-    state["payload_review"] = build_review_payload()
-    state["payload_final"] = build_final_payload("v1")
-    session_store.create_session("session-modify-logic", state)
-
-    final_state = runner.run("session-modify-logic", "req-2")
-
-    assert final_state["payload_logic"].chart_title == "Pipeline v2"
-    assert final_state["payload_style"].layout_style == "layout-v1"
-    assert final_state["payload_mapper"].narrative_direction == "left-to-right-v2"
-    assert runtime.logician.calls == 1
-    assert runtime.style_configurator.calls == 0
-    assert runtime.visual_mapper.calls == 1
-    assert runtime.summary.calls == 1
-
-
-def test_workflow_runner_interrupts_and_resumes_for_clarification() -> None:
     runtime = build_runtime(
-        orchestrator=StubExecutor(
-            "orchestrator",
+        orchestrator=StubOrchestrator(
             [
-                build_orchestrator_update(
-                    intent=IntentType.NEW_TASK,
-                    selected_nodes=[
-                        NodeName.LOGICIAN,
-                        NodeName.STYLE_CONFIGURATOR,
-                        NodeName.VISUAL_MAPPER,
-                        NodeName.CRITIC,
-                        NodeName.SUMMARY,
-                    ],
-                )
-            ],
-        ),
-        logician=StubExecutor(
-            "logician",
-            [{"payload_logic": build_logic_payload(), "stage": StageName.LOGIC_READY, "last_error": None}],
-        ),
-        style_configurator=StubExecutor(
-            "style_configurator",
-            [{"payload_style": build_style_payload(), "stage": StageName.STYLE_READY, "last_error": None}],
-        ),
-        visual_mapper=StubExecutor(
-            "visual_mapper",
-            [{"payload_mapper": build_mapper_payload(), "stage": StageName.MAPPING_READY, "last_error": None}],
-        ),
-        critic=StubExecutor(
-            "critic",
-            [{"payload_review": build_review_payload(), "stage": StageName.REVIEWING, "last_error": None}],
-        ),
-        summary=StubExecutor(
-            "summary",
-            [{"payload_final": build_final_payload(), "stage": StageName.PROMPT_READY, "last_error": None}],
-        ),
+                    decision_updates(
+                        intent=IntentType.CLARIFY,
+                        tool_calls=[clarification_call("call_1", "请补充论文摘要。")],
+                    ),
+                    decision_updates(intent=IntentType.NEW_TASK, tool_calls=post_resume_calls),
+                    decision_updates(
+                        intent=IntentType.NEW_TASK,
+                        tool_calls=[],
+                        finish=True,
+                        response_message="流程完成",
+                        stage=StageName.LOGIC_READY,
+                    ),
+                ]
+            ),
+        tool_registry=registry,
+        tool_executor=tool_executor,
     )
     session_store, _, event_store, _, runner = build_workflow_components(runtime)
-    session_store.create_session("session-clarify", build_initial_graph_state("session-clarify"))
+    session_store.create_session("session-clarify")
 
-    interrupted_state = runner.run("session-clarify", "req-3")
+    interrupted_state = runner.run("session-clarify", "req-2", source_text="Initial task.")
 
     assert interrupted_state["stage"] == StageName.CLARIFYING
     assert interrupted_state["needs_clarification"] is True
     assert interrupted_state["interrupted"] is True
-    assert interrupted_state["pending_clarification_question"] is not None
+    assert interrupted_state["active_clarification"] is not None
     assert EventType.CLARIFICATION_REQUIRED in [
         event.event_type for event in event_store.list_events("session-clarify")
     ]
 
-    resumed_state = runner.resume("session-clarify", "req-4", "Encoder decoder details.")
+    resumed_state = runner.resume("session-clarify", "req-3", user_feedback="论文摘要补充如下。")
 
-    assert resumed_state["stage"] == StageName.PROMPT_READY
+    assert resumed_state["stage"] == StageName.LOGIC_READY
     assert resumed_state["needs_clarification"] is False
     assert resumed_state["interrupted"] is False
-    assert resumed_state["user_feedback"] == "Encoder decoder details."
+    assert resumed_state["user_feedback"] == "论文摘要补充如下。"
+    assert resumed_state["payload_logic"] is not None
 
 
-def test_workflow_runner_rolls_back_to_visual_mapper_after_failed_review() -> None:
+def test_workflow_runner_requires_explicit_input_semantics() -> None:
+    registry = build_tool_registry()
     runtime = build_runtime(
-        orchestrator=StubExecutor(
-            "orchestrator",
-            [
-                build_orchestrator_update(
-                    intent=IntentType.NEW_TASK,
-                    selected_nodes=[
-                        NodeName.LOGICIAN,
-                        NodeName.STYLE_CONFIGURATOR,
-                        NodeName.VISUAL_MAPPER,
-                        NodeName.CRITIC,
-                        NodeName.SUMMARY,
-                    ],
-                )
-            ],
-        ),
-        logician=StubExecutor(
-            "logician",
-            [{"payload_logic": build_logic_payload(), "stage": StageName.LOGIC_READY, "last_error": None}],
-        ),
-        style_configurator=StubExecutor(
-            "style_configurator",
-            [{"payload_style": build_style_payload(), "stage": StageName.STYLE_READY, "last_error": None}],
-        ),
-        visual_mapper=StubExecutor(
-            "visual_mapper",
-            [
-                {"payload_mapper": build_mapper_payload("v1"), "stage": StageName.MAPPING_READY, "last_error": None},
-                {"payload_mapper": build_mapper_payload("v2"), "stage": StageName.MAPPING_READY, "last_error": None},
-            ],
-        ),
-        critic=StubExecutor(
-            "critic",
-            [
-                {
-                    "payload_review": build_review_payload(False, ReviewErrorStage.VISUAL_MAPPER),
-                    "stage": StageName.REVIEWING,
-                    "last_error": None,
-                },
-                {"payload_review": build_review_payload(), "stage": StageName.REVIEWING, "last_error": None},
-            ],
-        ),
-        summary=StubExecutor(
-            "summary",
-            [{"payload_final": build_final_payload("v2"), "stage": StageName.PROMPT_READY, "last_error": None}],
-        ),
+        orchestrator=StubOrchestrator([]),
+        tool_registry=registry,
+        tool_executor=StubToolExecutor(outcomes={}),
     )
-    session_store, _, event_store, _, runner = build_workflow_components(runtime)
-    state = build_initial_graph_state("session-rollback")
-    state["source_text"] = "Encoder decoder pipeline."
-    session_store.create_session("session-rollback", state)
+    session_store, _, _, _, runner = build_workflow_components(runtime)
+    session_store.create_session("session-inputs")
 
-    final_state = runner.run("session-rollback", "req-5")
+    try:
+        runner.run("session-inputs", "req-a", source_text="x", user_feedback="y")
+    except Exception as exc:
+        assert "Exactly one of source_text or user_feedback" in str(exc)
+    else:
+        raise AssertionError("runner.run should reject ambiguous input semantics")
 
-    assert final_state["stage"] == StageName.PROMPT_READY
-    assert final_state["error_count"] == 1
-    assert final_state["payload_mapper"].module_positions["Encoder"] == "v2"
-    assert runtime.visual_mapper.calls == 2
-    assert runtime.critic.calls == 2
-    assert EventType.REVIEW_FAILED in [
-        event.event_type for event in event_store.list_events("session-rollback")
-    ]
-
-
-def test_workflow_runner_fails_for_unknown_review_target() -> None:
-    runtime = build_runtime(
-        orchestrator=StubExecutor(
-            "orchestrator",
-            [
-                build_orchestrator_update(
-                    intent=IntentType.NEW_TASK,
-                    selected_nodes=[
-                        NodeName.LOGICIAN,
-                        NodeName.STYLE_CONFIGURATOR,
-                        NodeName.VISUAL_MAPPER,
-                        NodeName.CRITIC,
-                        NodeName.SUMMARY,
-                    ],
-                )
-            ],
-        ),
-        logician=StubExecutor(
-            "logician",
-            [{"payload_logic": build_logic_payload(), "stage": StageName.LOGIC_READY, "last_error": None}],
-        ),
-        style_configurator=StubExecutor(
-            "style_configurator",
-            [{"payload_style": build_style_payload(), "stage": StageName.STYLE_READY, "last_error": None}],
-        ),
-        visual_mapper=StubExecutor(
-            "visual_mapper",
-            [{"payload_mapper": build_mapper_payload(), "stage": StageName.MAPPING_READY, "last_error": None}],
-        ),
-        critic=StubExecutor(
-            "critic",
-            [
-                {
-                    "payload_review": build_review_payload(False, ReviewErrorStage.UNKNOWN),
-                    "stage": StageName.REVIEWING,
-                    "last_error": None,
-                }
-            ],
-        ),
-        summary=StubExecutor("summary", []),
-    )
-    session_store, _, event_store, _, runner = build_workflow_components(runtime)
-    state = build_initial_graph_state("session-unknown-review")
-    state["source_text"] = "Encoder decoder pipeline."
-    session_store.create_session("session-unknown-review", state)
-
-    final_state = runner.run("session-unknown-review", "req-6")
-
-    assert final_state["stage"] == StageName.FAILED
-    assert runtime.summary.calls == 0
-    assert EventType.ERROR in [
-        event.event_type for event in event_store.list_events("session-unknown-review")
-    ]
-
-
-def test_workflow_runner_trips_error_fuse_on_first_review_failure() -> None:
-    runtime = build_runtime(
-        orchestrator=StubExecutor(
-            "orchestrator",
-            [
-                build_orchestrator_update(
-                    intent=IntentType.NEW_TASK,
-                    selected_nodes=[
-                        NodeName.LOGICIAN,
-                        NodeName.STYLE_CONFIGURATOR,
-                        NodeName.VISUAL_MAPPER,
-                        NodeName.CRITIC,
-                        NodeName.SUMMARY,
-                    ],
-                )
-            ],
-        ),
-        logician=StubExecutor(
-            "logician",
-            [{"payload_logic": build_logic_payload(), "stage": StageName.LOGIC_READY, "last_error": None}],
-        ),
-        style_configurator=StubExecutor(
-            "style_configurator",
-            [{"payload_style": build_style_payload(), "stage": StageName.STYLE_READY, "last_error": None}],
-        ),
-        visual_mapper=StubExecutor(
-            "visual_mapper",
-            [{"payload_mapper": build_mapper_payload(), "stage": StageName.MAPPING_READY, "last_error": None}],
-        ),
-        critic=StubExecutor(
-            "critic",
-            [
-                {
-                    "payload_review": build_review_payload(False, ReviewErrorStage.VISUAL_MAPPER),
-                    "stage": StageName.REVIEWING,
-                    "last_error": None,
-                }
-            ],
-        ),
-        summary=StubExecutor("summary", []),
-    )
-    session_store, _, event_store, _, runner = build_workflow_components(runtime, max_error_count=0)
-    state = build_initial_graph_state("session-fuse")
-    state["source_text"] = "Encoder decoder pipeline."
-    session_store.create_session("session-fuse", state)
-
-    final_state = runner.run("session-fuse", "req-7")
-
-    assert final_state["stage"] == StageName.FAILED
-    assert final_state["error_count"] == 1
-    assert runtime.visual_mapper.calls == 1
-    assert runtime.summary.calls == 0
-    assert EventType.ERROR in [
-        event.event_type for event in event_store.list_events("session-fuse")
-    ]
-
-
-def test_workflow_failure_event_includes_diagnostic_details() -> None:
-    runtime = build_runtime(
-        orchestrator=StubExecutor(
-            "orchestrator",
-            [
-                LLMInvocationError(
-                    "LLM invocation failed after retries.",
-                    details={
-                        "model": "qwen-plus",
-                        "base_url": "https://sg.uiuiapi.com/v1",
-                        "error": "401 Unauthorized",
-                    },
-                )
-            ],
-        ),
-        logician=StubExecutor("logician", []),
-        style_configurator=StubExecutor("style_configurator", []),
-        visual_mapper=StubExecutor("visual_mapper", []),
-        critic=StubExecutor("critic", []),
-        summary=StubExecutor("summary", []),
-    )
-    session_store, _, event_store, _, runner = build_workflow_components(runtime)
-    state = build_initial_graph_state("session-orchestrator-failed")
-    state["source_text"] = "Encoder decoder pipeline."
-    session_store.create_session("session-orchestrator-failed", state)
-
-    final_state = runner.run("session-orchestrator-failed", "req-7b")
-
-    assert final_state["stage"] == StageName.FAILED
-    error_event = [
-        event for event in event_store.list_events("session-orchestrator-failed") if event.event_type == EventType.ERROR
-    ][0]
-    assert error_event.message == "Orchestrator failed."
-    assert error_event.details["failing_node"] == "orchestrator"
-    assert error_event.details["model"] == "qwen-plus"
-    assert error_event.details["base_url"] == "https://sg.uiuiapi.com/v1"
-    assert error_event.details["error"] == "401 Unauthorized"
+    try:
+        runner.run("session-inputs", "req-b", user_feedback="only feedback")
+    except Exception as exc:
+        assert "user_feedback requires source_text" in str(exc)
+    else:
+        raise AssertionError("runner.run should require source_text before feedback")
 
 
 def test_cleanup_service_clears_workflow_state_for_expired_sessions() -> None:
+    registry = build_tool_registry()
+    first_calls = [business_call("call_1", "logician_tool")]
     runtime = build_runtime(
-        orchestrator=StubExecutor(
-            "orchestrator",
+        orchestrator=StubOrchestrator(
             [
-                build_orchestrator_update(
+                decision_updates(intent=IntentType.NEW_TASK, tool_calls=first_calls),
+                decision_updates(
                     intent=IntentType.NEW_TASK,
-                    selected_nodes=[
-                        NodeName.LOGICIAN,
-                        NodeName.STYLE_CONFIGURATOR,
-                        NodeName.VISUAL_MAPPER,
-                        NodeName.CRITIC,
-                        NodeName.SUMMARY,
-                    ],
-                )
-            ],
+                    tool_calls=[],
+                    finish=True,
+                    response_message="流程完成",
+                    stage=StageName.LOGIC_READY,
+                ),
+            ]
         ),
-        logician=StubExecutor(
-            "logician",
-            [{"payload_logic": build_logic_payload(), "stage": StageName.LOGIC_READY, "last_error": None}],
-        ),
-        style_configurator=StubExecutor(
-            "style_configurator",
-            [{"payload_style": build_style_payload(), "stage": StageName.STYLE_READY, "last_error": None}],
-        ),
-        visual_mapper=StubExecutor(
-            "visual_mapper",
-            [{"payload_mapper": build_mapper_payload(), "stage": StageName.MAPPING_READY, "last_error": None}],
-        ),
-        critic=StubExecutor(
-            "critic",
-            [{"payload_review": build_review_payload(), "stage": StageName.REVIEWING, "last_error": None}],
-        ),
-        summary=StubExecutor(
-            "summary",
-            [{"payload_final": build_final_payload(), "stage": StageName.PROMPT_READY, "last_error": None}],
+        tool_registry=registry,
+        tool_executor=StubToolExecutor(
+            outcomes={
+                "logician_tool": [
+                    success_outcome(first_calls[0], {"payload_logic": build_logic_payload(), "stage": StageName.LOGIC_READY, "last_error": None})
+                ]
+            }
         ),
     )
     temp_dir = make_temp_dir("workflow-cleanup")
@@ -612,11 +424,9 @@ def test_cleanup_service_clears_workflow_state_for_expired_sessions() -> None:
             temp_file_manager,
             session_cleanup_hooks=[runner.clear_session],
         )
-        state = build_initial_graph_state("session-cleanup-workflow")
-        state["source_text"] = "Encoder decoder pipeline."
-        record = session_store.create_session("session-cleanup-workflow", state)
+        record = session_store.create_session("session-cleanup-workflow")
         temp_file_manager.ensure_session_directories(record.session_id)
-        runner.run("session-cleanup-workflow", "req-8")
+        runner.run("session-cleanup-workflow", "req-8", source_text="Encoder decoder pipeline.")
         record.expires_at = utc_now() - timedelta(seconds=1)
 
         cleanup_service.purge_expired_sessions()

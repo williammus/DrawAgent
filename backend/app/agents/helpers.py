@@ -23,4 +23,10 @@ def payload_status_summary(state: GraphState) -> dict[str, Any]:
         "has_review": state["payload_review"] is not None,
         "has_final": state["payload_final"] is not None,
         "needs_clarification": state["needs_clarification"],
+        "has_pending_tool_calls": bool(state["pending_tool_calls"]),
+        "active_clarification": (
+            state["active_clarification"].model_dump(mode="json")
+            if state["active_clarification"] is not None
+            else None
+        ),
     }

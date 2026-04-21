@@ -32,6 +32,14 @@ from app.schemas.common import (
     StageName,
 )
 from app.schemas.events import AgentEvent
+from app.schemas.tools import (
+    ClarificationRequestSpec,
+    ToolCallSpec,
+    ToolExecutionStatus,
+    ToolExecutionTraceItem,
+    ToolKind,
+    ToolResultSpec,
+)
 
 __all__ = [
     "AgentEvent",
@@ -60,6 +68,12 @@ __all__ = [
     "SseEventEnvelope",
     "StoredFileMeta",
     "StyleSpec",
+    "ClarificationRequestSpec",
+    "ToolCallSpec",
+    "ToolExecutionStatus",
+    "ToolExecutionTraceItem",
+    "ToolKind",
+    "ToolResultSpec",
     "UploadDeleteResponse",
     "UploadResponse",
 ]

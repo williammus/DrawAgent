@@ -1,6 +1,7 @@
 import pytest
 from pydantic import ValidationError
 
+from app.schemas.agents import OrchestratorDecisionSpec
 from app.schemas.artifacts import (
     FinalPromptSpec,
     LogicSpec,
@@ -8,9 +9,9 @@ from app.schemas.artifacts import (
     ReviewSpec,
     StyleSpec,
 )
-from app.schemas.agents import OrchestratorDecisionSpec
 from app.schemas.common import ReviewErrorStage
 from app.schemas.events import ReviewFailedEvent
+from app.schemas.tools import ToolCallSpec
 
 
 def test_artifact_schemas_accept_valid_payloads() -> None:
@@ -88,13 +89,22 @@ def test_review_failed_event_uses_discriminated_payload() -> None:
     assert event.error_stage == ReviewErrorStage.STYLE_CONFIGURATOR
 
 
-def test_orchestrator_decision_requires_empty_selected_nodes_when_clarifying() -> None:
+def test_orchestrator_decision_rejects_tool_calls_when_finish_is_true() -> None:
     with pytest.raises(ValidationError):
         OrchestratorDecisionSpec(
-            intent="clarify",
-            requires_clarification=True,
-            clarification_question="Please provide the abstract.",
-            selected_nodes=["logician"],
-            reason="Missing source text.",
-            user_message="请补充摘要。",
+            intent="new_task",
+            tool_calls=[ToolCallSpec(call_id="call_1", tool_name="logician_tool")],
+            response_message="done",
+            finish=True,
+            finish_reason="completed",
+        )
+
+
+def test_orchestrator_decision_requires_finish_reason_for_terminal_response() -> None:
+    with pytest.raises(ValidationError):
+        OrchestratorDecisionSpec(
+            intent="new_task",
+            tool_calls=[],
+            response_message="done",
+            finish=True,
         )
