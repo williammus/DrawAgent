@@ -16,7 +16,6 @@ class LogicianExecutor(TextArtifactExecutor):
         artifacts = state.get("artifacts") or {}
         return {
             "source_text": source_text,
-            "source_files": [file_meta.model_dump(mode="json") for file_meta in state["source_files"]],
             "modification_instruction": state["user_feedback"] or "",
             "previous_logic_artifact": (
                 artifacts["logic_artifact"].content if artifacts.get("logic_artifact") is not None else ""

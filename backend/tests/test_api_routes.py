@@ -73,18 +73,6 @@ def test_phase5_api_flow() -> None:
         session_payload = session_response.json()
         session_id = session_payload["session_id"]
 
-        upload_response = client.post(
-            "/api/upload",
-            data={"session_id": session_id},
-            files=[("files", ("paper.md", b"# Abstract", "text/markdown"))],
-        )
-        assert upload_response.status_code == 201
-        uploaded_file = upload_response.json()["files"][0]
-        file_id = uploaded_file["file_id"]
-        state = client.app.state.session_store.get_state(session_id)
-        assert len(state["uploaded_files"]) == 1
-        assert state["source_files"][0].file_id == file_id
-
         stub_chat_service = StubChatService()
         client.app.state.chat_service = stub_chat_service
         message_response = client.post(
@@ -152,11 +140,6 @@ def test_phase5_api_flow() -> None:
         assert download_response.status_code == 200
         assert download_response.headers["content-type"] == "image/png"
         assert download_response.content
-
-        delete_upload_response = client.delete(f"/api/upload/{session_id}/{file_id}")
-        assert delete_upload_response.status_code == 200
-        assert delete_upload_response.json()["deleted"] is True
-        assert client.app.state.session_store.get_state(session_id)["uploaded_files"] == []
 
         delete_session_response = client.delete(f"/api/session/{session_id}")
         assert delete_session_response.status_code == 200

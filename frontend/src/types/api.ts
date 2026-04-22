@@ -7,7 +7,6 @@ import type {
   GeneratedImageMeta,
   ReviewPhase,
   SessionSummary,
-  StoredFileMeta,
   WorkflowOperation,
   WorkflowWarningType,
 } from "./domain";
@@ -53,17 +52,6 @@ export interface ChatWorkflowResponse {
   stream_url: string;
   operation: WorkflowOperation;
   response_message: string | null;
-}
-
-export interface UploadResponse {
-  session_id: string;
-  files: StoredFileMeta[];
-}
-
-export interface UploadDeleteResponse {
-  session_id: string;
-  file_id: string;
-  deleted: boolean;
 }
 
 export type ArtifactResponse = ArtifactsBundle;

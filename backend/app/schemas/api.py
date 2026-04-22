@@ -8,7 +8,6 @@ from app.schemas.artifacts import (
     CleanupReport,
     GeneratedImageMeta,
     SessionStateSummary,
-    StoredFileMeta,
     TextArtifact,
 )
 from app.schemas.common import ErrorCode, GenerateStatus, StageName
@@ -65,17 +64,6 @@ class ChatWorkflowResponse(StrictModel):
     stream_url: str
     operation: str
     response_message: str | None = None
-
-
-class UploadResponse(StrictModel):
-    session_id: str
-    files: list[StoredFileMeta] = Field(default_factory=list)
-
-
-class UploadDeleteResponse(StrictModel):
-    session_id: str
-    file_id: str
-    deleted: bool
 
 
 class ArtifactResponse(StrictModel):

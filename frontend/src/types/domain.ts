@@ -89,16 +89,6 @@ export interface SessionSummary {
   expires_at: string;
 }
 
-export interface StoredFileMeta {
-  file_id: string;
-  original_name: string;
-  stored_name: string;
-  media_type: string;
-  size_bytes: number;
-  relative_path: string;
-  uploaded_at: string;
-}
-
 export interface GeneratedImageMeta {
   file_name: string;
   media_type: string;

@@ -23,21 +23,16 @@ def test_build_initial_graph_state_returns_expected_defaults() -> None:
     assert state["post_mapper_review_rounds_in_loop"] == 0
     assert state["current_review_phase"] is None
     assert state["bypass_warnings"] == []
-    assert state["uploaded_files"] == []
-    assert state["source_files"] == []
     assert state["parsed_discipline"] is None
     assert state["parsed_target_venue"] is None
     assert state["parsed_target_venue_type"] is None
     assert state["parsed_special_requirements"] == []
     assert state["input_parse_pending"] is False
-    assert state["pending_clarification_question"] is None
-    assert state["orchestrator_decision"] is None
-    assert state["payload_logic"] is None
-    assert state["payload_final"] is None
     assert state["error_count"] == 0
     assert state["needs_clarification"] is False
     assert state["interrupted"] is False
-    assert state["rollback_target"] is None
+    assert state["generated_image_path"] is None
+    assert state["generated_image_meta"] is None
 
 
 def test_graph_state_accepts_langgraph_compatible_messages() -> None:

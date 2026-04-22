@@ -3,7 +3,7 @@
 ## Project Structure & Module Organization
 `backend/` contains the FastAPI service, LangGraph workflow, prompt assets, and tests. Core runtime code lives under `backend/app/` with modules split by concern: `api/routes/`, `agents/`, `graph/`, `services/`, `storage/`, and `prompts/`. Backend tests are in `backend/tests/`.
 
-`frontend/` is a React + TypeScript + Vite SPA. UI code lives in `frontend/src/` and is organized by layer: `api/`, `components/`, `hooks/`, `store/`, `types/`, and `features/`. `legacy/agent1/` is archived 1.0 code for reference only. Planning and handoff docs live in `Refactoring_Upgrading_Plan/` and `progress_docs/`.
+`frontend/` is a React + TypeScript + Vite SPA. UI code lives in `frontend/src/` and is organized by layer: `api/`, `components/`, `hooks/`, `store/`, `types/`, and `features/`. `legacy/agent1/` is archived 1.0 code for reference only. Planning and handoff docs live in `Upgrade_Plan/` and `progress_docs/`.
 
 ## Build, Test, and Development Commands
 Backend uses `backend/manage.py` as the main task entrypoint:

@@ -1,23 +1,17 @@
 from __future__ import annotations
 
-from typing import Any, Annotated, TypedDict, cast
+from typing import Annotated, TypedDict, cast
 
 from langchain_core.messages import AnyMessage
 from langgraph.graph.message import add_messages
 
 from app.schemas.artifacts import (
     ClarificationAction,
-    FinalPromptSpec,
     GeneratedImageMeta,
-    LogicSpec,
-    MapperSpec,
-    ReviewSpec,
-    StoredFileMeta,
-    StyleSpec,
     TextArtifact,
     WorkflowWarning,
 )
-from app.schemas.agents import ControllerToolCall, OrchestratorDecisionSpec, ToolExecutionResult
+from app.schemas.agents import ControllerToolCall, ToolExecutionResult
 from app.schemas.common import IntentType, ReviewPhase, StageName
 
 
@@ -28,9 +22,6 @@ class GraphState(TypedDict):
     intent: IntentType
     source_text: str | None
     source_text_locked: bool
-    uploaded_files: list[StoredFileMeta]
-    source_files: list[StoredFileMeta]
-    research_context: dict[str, Any] | None
     user_feedback: str | None
     parsed_discipline: str | None
     parsed_target_venue: str | None
@@ -48,22 +39,12 @@ class GraphState(TypedDict):
     post_mapper_review_rounds_in_loop: int
     current_review_phase: ReviewPhase | None
     bypass_warnings: list[WorkflowWarning]
-
-    # Legacy compatibility fields kept until later workflow phases are migrated.
-    pending_clarification_question: str | None
-    orchestrator_decision: OrchestratorDecisionSpec | None
-    payload_logic: LogicSpec | None
-    payload_style: StyleSpec | None
-    payload_mapper: MapperSpec | None
-    payload_review: ReviewSpec | None
-    payload_final: FinalPromptSpec | None
     generated_image_path: str | None
     generated_image_meta: GeneratedImageMeta | None
     error_count: int
     last_error: str | None
     needs_clarification: bool
     interrupted: bool
-    rollback_target: str | None
     user_confirmed: bool
 
 
@@ -77,9 +58,6 @@ def build_initial_graph_state(session_id: str) -> GraphState:
             "intent": IntentType.UNKNOWN,
             "source_text": None,
             "source_text_locked": False,
-            "uploaded_files": [],
-            "source_files": [],
-            "research_context": None,
             "user_feedback": None,
             "parsed_discipline": None,
             "parsed_target_venue": None,
@@ -104,20 +82,12 @@ def build_initial_graph_state(session_id: str) -> GraphState:
             "post_mapper_review_rounds_in_loop": 0,
             "current_review_phase": None,
             "bypass_warnings": [],
-            "pending_clarification_question": None,
-            "orchestrator_decision": None,
-            "payload_logic": None,
-            "payload_style": None,
-            "payload_mapper": None,
-            "payload_review": None,
-            "payload_final": None,
             "generated_image_path": None,
             "generated_image_meta": None,
             "error_count": 0,
             "last_error": None,
             "needs_clarification": False,
             "interrupted": False,
-            "rollback_target": None,
             "user_confirmed": False,
         },
     )

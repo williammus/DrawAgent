@@ -122,7 +122,6 @@ class WorkflowRunner:
             working_state["controller_tool_calls"] = []
             working_state["last_tool_results"] = []
             working_state["pending_clarification"] = None
-            working_state["pending_clarification_question"] = None
             working_state["needs_clarification"] = False
             working_state["loop_id"] = uuid4().hex
             working_state["clarification_rounds_in_loop"] = 0

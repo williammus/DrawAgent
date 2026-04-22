@@ -13,7 +13,6 @@ from app.api.routes.chat import router as chat_router
 from app.api.routes.generation import router as generation_router
 from app.api.routes.health import router as health_router
 from app.api.routes.session import router as session_router
-from app.api.routes.upload import router as upload_router
 from app.core.logging import configure_logging
 from app.core.settings import get_settings
 from app.graph import (
@@ -95,8 +94,6 @@ async def lifespan(app: FastAPI):
     session_service = SessionService(
         session_store=session_store,
         temp_file_manager=temp_file_manager,
-        max_session_files=settings.max_session_files,
-        max_session_file_size_mb=settings.max_session_file_size_mb,
         session_cleanup_hooks=session_cleanup_hooks,
     )
     chat_service = ChatService(
@@ -177,7 +174,6 @@ def create_app() -> FastAPI:
     app.include_router(health_router)
     app.include_router(session_router)
     app.include_router(chat_router)
-    app.include_router(upload_router)
     app.include_router(artifacts_router)
     app.include_router(generation_router)
     register_error_handlers(app)

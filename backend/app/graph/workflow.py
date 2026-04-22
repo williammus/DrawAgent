@@ -120,7 +120,6 @@ def _build_controller_node(
             )
             working_state["user_feedback"] = str(answer)
             working_state["pending_clarification"] = None
-            working_state["pending_clarification_question"] = None
             working_state["needs_clarification"] = False
             working_state["interrupted"] = False
             working_state["stage"] = StageName.PLANNING
@@ -305,7 +304,6 @@ def _execute_control_tool_call(
             ),
         )
         working_state["pending_clarification"] = None
-        working_state["pending_clarification_question"] = None
         working_state["needs_clarification"] = False
         working_state["interrupted"] = False
         working_state["stage"] = StageName.PLANNING
@@ -318,7 +316,6 @@ def _execute_control_tool_call(
 
     working_state["clarification_rounds_in_loop"] += 1
     working_state["pending_clarification"] = action
-    working_state["pending_clarification_question"] = action.question
     working_state["needs_clarification"] = True
     working_state["interrupted"] = True
     working_state["stage"] = StageName.CLARIFYING
@@ -569,19 +566,14 @@ def _clear_state_for_retry(
         artifacts["mapper_artifact"] = None
         artifacts["plan_review_artifact"] = None
         artifacts["final_review_artifact"] = None
-        state["payload_logic"] = None
     if "style_configurator" in failed_subjects:
         artifacts["style_artifact"] = None
         artifacts["mapper_artifact"] = None
         artifacts["plan_review_artifact"] = None
         artifacts["final_review_artifact"] = None
-        state["payload_style"] = None
     if "visual_mapper" in failed_subjects:
         artifacts["mapper_artifact"] = None
         artifacts["final_review_artifact"] = None
-        state["payload_mapper"] = None
-    state["payload_review"] = None
-    state["payload_final"] = None
     state["artifacts"] = artifacts
 
 
