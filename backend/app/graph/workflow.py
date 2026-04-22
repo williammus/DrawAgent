@@ -7,7 +7,7 @@ from langchain_core.runnables import RunnableConfig
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import interrupt
 
-from app.core.errors import DrawAgentError, InputValidationError
+from app.core.errors import DrawAgentError
 from app.graph.state import GraphState
 from app.graph.stores import WorkflowEventStore
 from app.schemas import (
@@ -125,6 +125,7 @@ def _build_controller_node(
             working_state["interrupted"] = False
             working_state["stage"] = StageName.PLANNING
             working_state["last_error"] = None
+            working_state["input_parse_pending"] = True
             _emit_stage_completed(
                 event_store,
                 session_id=session_id,
@@ -141,6 +142,31 @@ def _build_controller_node(
             message="Controller started.",
         )
         try:
+            if working_state.get("input_parse_pending"):
+                latest_input = _latest_user_input_for_parse(working_state)
+                if latest_input:
+                    parsed = agent_runtime.controller.parse_context(
+                        latest_input=latest_input,
+                        state=working_state,
+                    )
+                    _apply_context_parse(working_state, parsed)
+                working_state["input_parse_pending"] = False
+
+            missing_fields = _required_context_fields(working_state)
+            if missing_fields:
+                clarification_call = _build_context_clarification_call(missing_fields)
+                working_state["controller_tool_calls"] = [clarification_call]
+                working_state["intent"] = IntentType.CLARIFY
+                working_state["last_error"] = None
+                _emit_stage_completed(
+                    event_store,
+                    session_id=session_id,
+                    request_id=request_id,
+                    stage=StageName.PLANNING,
+                    message="Controller requested required context clarification.",
+                )
+                return _state_diff(state, working_state)
+
             response = agent_runtime.controller.run(working_state)
             validated_tool_calls = _validate_controller_tool_calls(
                 response.tool_calls,
@@ -322,22 +348,18 @@ def _execute_business_tool_call(
     )
 
     if tool_call.tool_name == "critic_tool":
-        critic_input = CriticToolInput.model_validate(tool_call.arguments)
-        working_state["current_review_phase"] = critic_input.review_phase
-
-    executor = agent_runtime.tool_factory.create_executor(tool_call.tool_name)
-    updates = executor.run(working_state)
-    working_state.update(updates)
-
-    if tool_call.tool_name == "critic_tool":
-        result = _handle_critic_result(
+        result = _handle_critic_gate(
             tool_call=tool_call,
             working_state=working_state,
+            agent_runtime=agent_runtime,
             event_store=event_store,
             session_id=session_id,
             request_id=request_id,
         )
     else:
+        executor = agent_runtime.tool_factory.create_executor(tool_call.tool_name)
+        updates = executor.run(working_state)
+        working_state.update(updates)
         result = ToolExecutionResult(
             tool_name=tool_call.tool_name,
             ok=True,
@@ -345,8 +367,12 @@ def _execute_business_tool_call(
         )
 
     if tool_call.tool_name == "summary_tool":
-        payload_final = working_state.get("payload_final")
-        if payload_final is not None and payload_final.ready_for_generation:
+        final_prompt_artifact = working_state["artifacts"].get("final_prompt_artifact")
+        ready_for_generation = bool(
+            final_prompt_artifact is not None
+            and final_prompt_artifact.metadata.get("ready_for_generation", True)
+        )
+        if final_prompt_artifact is not None and ready_for_generation:
             event_store.append(
                 session_id,
                 PromptReadyEvent(
@@ -354,8 +380,8 @@ def _execute_business_tool_call(
                     stage=StageName.PROMPT_READY,
                     request_id=request_id,
                     message="Final prompt is ready for generation.",
-                    prompt_version=payload_final.prompt_version,
-                    ready_for_generation=payload_final.ready_for_generation,
+                    prompt_version=final_prompt_artifact.prompt_version,
+                    ready_for_generation=ready_for_generation,
                 ),
             )
 
@@ -369,22 +395,61 @@ def _execute_business_tool_call(
     return result
 
 
-def _handle_critic_result(
+def _handle_critic_gate(
     *,
     tool_call: ControllerToolCall,
     working_state: GraphState,
+    agent_runtime: AgentRuntime,
     event_store: WorkflowEventStore,
     session_id: str,
     request_id: str,
 ) -> ToolExecutionResult:
     critic_input = CriticToolInput.model_validate(tool_call.arguments)
-    review = working_state["payload_review"]
-    if review is None:
-        raise InputValidationError(
-            "critic_tool must produce payload_review.",
-            details={"tool_name": tool_call.tool_name},
+    working_state["current_review_phase"] = critic_input.review_phase
+    executor = agent_runtime.tool_factory.create_executor(tool_call.tool_name)
+    subject_order = (
+        ["logician", "style_configurator"]
+        if critic_input.review_phase == ReviewPhase.POST_PLAN
+        else ["visual_mapper"]
+    )
+
+    subject_artifacts = [
+        executor.review_subject(
+            working_state,
+            subject_type=subject_type,
+            review_phase=critic_input.review_phase,
         )
-    if review.passed:
+        for subject_type in subject_order
+    ]
+    failed_subjects = [
+        str(artifact.metadata.get("subject_type"))
+        for artifact in subject_artifacts
+        if not artifact.metadata.get("passed", False)
+    ]
+    passed = not failed_subjects
+
+    combined_content = "\n\n".join(artifact.content for artifact in subject_artifacts)
+    review_slot = (
+        "plan_review_artifact"
+        if critic_input.review_phase == ReviewPhase.POST_PLAN
+        else "final_review_artifact"
+    )
+    review_artifact = subject_artifacts[-1].model_copy(
+        update={
+            "content": combined_content,
+            "metadata": {
+                "passed": passed,
+                "review_phase": critic_input.review_phase,
+                "subjects": subject_order,
+                "failed_subjects": failed_subjects,
+            },
+        }
+    )
+    artifacts = dict(working_state["artifacts"])
+    artifacts[review_slot] = review_artifact
+    working_state["artifacts"] = artifacts
+
+    if passed:
         return ToolExecutionResult(
             tool_name=tool_call.tool_name,
             ok=True,
@@ -392,6 +457,7 @@ def _handle_critic_result(
             review_phase=critic_input.review_phase,
         )
 
+    failure_stage = _review_error_stage_for_subject(failed_subjects[0])
     event_store.append(
         session_id,
         ReviewFailedEvent(
@@ -400,12 +466,11 @@ def _handle_critic_result(
             request_id=request_id,
             message="Critic requested a retry.",
             review_phase=critic_input.review_phase,
-            reason=review.reason,
-            error_stage=review.error_stage or ReviewErrorStage.UNKNOWN,
-            fix_suggestion=review.fix_suggestion,
+            reason=combined_content,
+            error_stage=failure_stage,
+            fix_suggestion=[],
         ),
     )
-
     counter_key = _review_counter_key(critic_input.review_phase)
     working_state[counter_key] += 1
     if working_state[counter_key] > 2:
@@ -419,10 +484,13 @@ def _handle_critic_result(
             review_phase=critic_input.review_phase,
         )
         working_state["bypass_warnings"] = [*working_state["bypass_warnings"], warning]
-        working_state["payload_review"] = review.model_copy(
+        working_state["artifacts"][review_slot] = review_artifact.model_copy(
             update={
-                "passed": True,
-                "reason": f"{review.reason} [warning bypassed after review limit reached]",
+                "metadata": {
+                    **review_artifact.metadata,
+                    "passed": True,
+                    "warning_bypassed": True,
+                }
             }
         )
         event_store.append(
@@ -443,16 +511,16 @@ def _handle_critic_result(
             message=warning.message,
             review_phase=critic_input.review_phase,
             warning_type=warning.warning_type,
-            retry_target=review.error_stage.value if review.error_stage is not None else None,
+            retry_target=_retry_target_for_failed_subjects(failed_subjects),
         )
 
-    _clear_state_for_retry(working_state, review.error_stage)
+    _clear_state_for_retry(working_state, failed_subjects)
     return ToolExecutionResult(
         tool_name=tool_call.tool_name,
         ok=False,
-        message=review.reason,
+        message=combined_content,
         review_phase=critic_input.review_phase,
-        retry_target=review.error_stage.value if review.error_stage is not None else None,
+        retry_target=_retry_target_for_failed_subjects(failed_subjects),
     )
 
 
@@ -492,21 +560,29 @@ def _review_counter_key(review_phase: ReviewPhase) -> str:
 
 def _clear_state_for_retry(
     state: GraphState,
-    error_stage: ReviewErrorStage | None,
+    failed_subjects: list[str],
 ) -> None:
+    artifacts = dict(state["artifacts"])
+    artifacts["final_prompt_artifact"] = None
+    if "logician" in failed_subjects:
+        artifacts["logic_artifact"] = None
+        artifacts["mapper_artifact"] = None
+        artifacts["plan_review_artifact"] = None
+        artifacts["final_review_artifact"] = None
+        state["payload_logic"] = None
+    if "style_configurator" in failed_subjects:
+        artifacts["style_artifact"] = None
+        artifacts["mapper_artifact"] = None
+        artifacts["plan_review_artifact"] = None
+        artifacts["final_review_artifact"] = None
+        state["payload_style"] = None
+    if "visual_mapper" in failed_subjects:
+        artifacts["mapper_artifact"] = None
+        artifacts["final_review_artifact"] = None
+        state["payload_mapper"] = None
+    state["payload_review"] = None
     state["payload_final"] = None
-    if error_stage == ReviewErrorStage.LOGICIAN:
-        state["payload_mapper"] = None
-        state["payload_review"] = None
-        return
-    if error_stage == ReviewErrorStage.STYLE_CONFIGURATOR:
-        state["payload_mapper"] = None
-        state["payload_review"] = None
-        return
-    if error_stage == ReviewErrorStage.VISUAL_MAPPER:
-        state["payload_mapper"] = None
-        state["payload_review"] = None
-        return
+    state["artifacts"] = artifacts
 
 
 def _validate_controller_tool_calls(
@@ -534,11 +610,12 @@ def _infer_intent(state: GraphState, tool_calls: list[ControllerToolCall]):
         return state["intent"]
     if state["intent"] not in {IntentType.UNKNOWN, IntentType.CLARIFY}:
         return state["intent"]
+    artifacts = state.get("artifacts") or {}
     tool_names = {tool.tool_name for tool in tool_calls}
     if {"logician_tool", "style_configurator_tool"} <= tool_names:
         return (
             IntentType.NEW_TASK
-            if state["source_text"] and state["payload_logic"] is None
+            if state["source_text"] and artifacts.get("logic_artifact") is None
             else IntentType.MODIFY_LOGIC_AND_STYLE
         )
     first_tool = tool_calls[0].tool_name
@@ -551,6 +628,79 @@ def _infer_intent(state: GraphState, tool_calls: list[ControllerToolCall]):
     if first_tool == "ask_clarification":
         return IntentType.CLARIFY
     return state["intent"]
+
+
+def _latest_user_input_for_parse(state: GraphState) -> str:
+    if state.get("loop_origin") == "user_feedback":
+        return str(state.get("user_feedback") or "")
+    if state.get("loop_origin") == "source_text":
+        return str(state.get("source_text") or "")
+    return str(state.get("user_feedback") or state.get("source_text") or "")
+
+
+def _apply_context_parse(state: GraphState, parsed: Any) -> None:
+    discipline = str(parsed.discipline).strip() if parsed.discipline else ""
+    target_venue = str(parsed.target_venue).strip() if parsed.target_venue else ""
+    target_venue_type = parsed.target_venue_type
+
+    if discipline:
+        state["parsed_discipline"] = discipline
+    if target_venue:
+        state["parsed_target_venue"] = target_venue
+    if target_venue_type:
+        state["parsed_target_venue_type"] = target_venue_type
+
+    incoming_requirements = [item.strip() for item in parsed.special_requirements if str(item).strip()]
+    if parsed.special_requirements_action == "replace":
+        state["parsed_special_requirements"] = incoming_requirements
+    elif parsed.special_requirements_action == "append":
+        existing = state.get("parsed_special_requirements") or []
+        merged: list[str] = []
+        for item in [*existing, *incoming_requirements]:
+            if item not in merged:
+                merged.append(item)
+        state["parsed_special_requirements"] = merged
+
+
+def _required_context_fields(state: GraphState) -> list[str]:
+    missing: list[str] = []
+    if not (state.get("parsed_discipline") or "").strip():
+        missing.append("discipline")
+    if not (state.get("parsed_target_venue") or "").strip():
+        missing.append("target_venue")
+    venue_type = (state.get("parsed_target_venue_type") or "").strip().lower()
+    if venue_type in {"", "unknown"}:
+        missing.append("target_venue_type")
+    return missing
+
+
+def _build_context_clarification_call(missing_fields: list[str]) -> ControllerToolCall:
+    return ControllerToolCall(
+        tool_name="ask_clarification",
+        arguments={
+            "question": "请补充该图所属领域、目标期刊或会议，以及它属于期刊还是会议。",
+            "reason": "missing_required_context",
+            "missing_fields": missing_fields,
+        },
+    )
+
+
+def _review_error_stage_for_subject(subject_type: str) -> ReviewErrorStage:
+    if subject_type == "logician":
+        return ReviewErrorStage.LOGICIAN
+    if subject_type == "style_configurator":
+        return ReviewErrorStage.STYLE_CONFIGURATOR
+    if subject_type == "visual_mapper":
+        return ReviewErrorStage.VISUAL_MAPPER
+    return ReviewErrorStage.UNKNOWN
+
+
+def _retry_target_for_failed_subjects(failed_subjects: list[str]) -> str | None:
+    if not failed_subjects:
+        return None
+    if len(failed_subjects) == 1:
+        return failed_subjects[0]
+    return "multiple"
 
 
 def _state_diff(base_state: GraphState, updated_state: GraphState) -> dict[str, Any]:

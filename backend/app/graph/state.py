@@ -32,6 +32,11 @@ class GraphState(TypedDict):
     source_files: list[StoredFileMeta]
     research_context: dict[str, Any] | None
     user_feedback: str | None
+    parsed_discipline: str | None
+    parsed_target_venue: str | None
+    parsed_target_venue_type: str | None
+    parsed_special_requirements: list[str]
+    input_parse_pending: bool
     artifacts: dict[str, TextArtifact | None]
     controller_tool_calls: list[ControllerToolCall]
     last_tool_results: list[ToolExecutionResult]
@@ -76,6 +81,11 @@ def build_initial_graph_state(session_id: str) -> GraphState:
             "source_files": [],
             "research_context": None,
             "user_feedback": None,
+            "parsed_discipline": None,
+            "parsed_target_venue": None,
+            "parsed_target_venue_type": None,
+            "parsed_special_requirements": [],
+            "input_parse_pending": False,
             "artifacts": {
                 "logic_artifact": None,
                 "style_artifact": None,

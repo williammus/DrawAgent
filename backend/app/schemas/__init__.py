@@ -1,5 +1,6 @@
 from app.schemas.agents import (
     AskClarificationToolInput,
+    ContextParseResult,
     ControllerResponse,
     ControllerToolCall,
     CriticToolInput,
@@ -57,6 +58,7 @@ __all__ = [
     "ChatWorkflowResponse",
     "ClarificationAction",
     "CleanupReport",
+    "ContextParseResult",
     "ControllerResponse",
     "ControllerToolCall",
     "CriticToolInput",

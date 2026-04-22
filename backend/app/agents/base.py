@@ -9,6 +9,7 @@ from app.core.errors import ArtifactValidationError, InputValidationError
 from app.graph.state import GraphState
 from app.llm import LLMClient
 from app.prompts import PromptRegistry, PromptRenderer
+from app.schemas.artifacts import TextArtifact
 from app.schemas.agents import ControllerResponse
 
 
@@ -79,6 +80,79 @@ class StructuredAgentExecutor(ABC, Generic[ModelT]):
                 details={"agent_name": self.agent_name, "field_name": field_name},
             )
         return value
+
+
+class PromptDrivenExecutor(ABC):
+    agent_name: str
+
+    def __init__(
+        self,
+        *,
+        llm_client: LLMClient,
+        prompt_registry: PromptRegistry | None = None,
+        prompt_renderer: PromptRenderer | None = None,
+        prompt_version: str | None = None,
+        **_: Any,
+    ) -> None:
+        self.llm_client = llm_client
+        self.prompt_registry = prompt_registry or PromptRegistry()
+        self.prompt_renderer = prompt_renderer or PromptRenderer()
+        self.prompt_version = prompt_version
+
+    def render_prompt(self, variables: dict[str, Any]) -> tuple[str, str]:
+        asset = self.prompt_registry.get(self.agent_name, self.prompt_version)
+        prompt_text = self.prompt_renderer.render(asset.load_text(), variables)
+        return prompt_text, asset.version
+
+    def generate_text_response(self, prompt_text: str) -> str:
+        return self.llm_client.generate_text(
+            prompt_text,
+            system_prompt=self.build_system_prompt(),
+        )
+
+    def build_system_prompt(self) -> str | None:
+        return None
+
+    def require_field(self, state: GraphState, field_name: str) -> Any:
+        value = state.get(field_name)
+        if value is None:
+            raise InputValidationError(
+                f"{self.agent_name} requires field {field_name}.",
+                details={"agent_name": self.agent_name, "field_name": field_name},
+            )
+        return value
+
+
+class TextArtifactExecutor(PromptDrivenExecutor, ABC):
+    artifact_slot: str
+
+    def run(self, state: GraphState) -> dict[str, Any]:
+        variables = self.build_prompt_variables(state)
+        prompt_text, prompt_version = self.render_prompt(variables)
+        content = self.generate_text_response(prompt_text).strip()
+        if not content:
+            raise ArtifactValidationError(
+                f"{self.agent_name} returned empty text artifact.",
+                details={"agent_name": self.agent_name},
+            )
+        artifact = TextArtifact(
+            tool_name=self.agent_name,
+            content=content,
+            prompt_version=prompt_version,
+            metadata=self.build_artifact_metadata(state, content),
+        )
+        return self.build_state_updates(state, artifact)
+
+    @abstractmethod
+    def build_prompt_variables(self, state: GraphState) -> dict[str, Any]:
+        raise NotImplementedError
+
+    @abstractmethod
+    def build_state_updates(self, state: GraphState, artifact: TextArtifact) -> dict[str, Any]:
+        raise NotImplementedError
+
+    def build_artifact_metadata(self, state: GraphState, content: str) -> dict[str, Any]:
+        return {}
 
 
 class ControllerExecutor(ABC):

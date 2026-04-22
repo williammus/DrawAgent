@@ -95,6 +95,7 @@ class TextArtifact(StrictModel):
     tool_name: str
     content: str
     prompt_version: str
+    metadata: dict[str, Any] = Field(default_factory=dict)
     updated_at: datetime = Field(default_factory=utc_now)
 
 

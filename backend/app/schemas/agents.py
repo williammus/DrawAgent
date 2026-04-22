@@ -43,6 +43,14 @@ class CriticToolInput(StrictModel):
     review_phase: ReviewPhase
 
 
+class ContextParseResult(StrictModel):
+    discipline: str | None = None
+    target_venue: str | None = None
+    target_venue_type: Literal["journal", "conference", "unknown"] | None = None
+    special_requirements: list[str] = Field(default_factory=list)
+    special_requirements_action: Literal["append", "replace", "unchanged"] = "append"
+
+
 class ControllerToolCall(StrictModel):
     tool_call_id: str | None = None
     tool_name: str

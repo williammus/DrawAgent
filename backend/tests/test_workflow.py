@@ -3,8 +3,8 @@ from __future__ import annotations
 from datetime import timedelta
 from pathlib import Path
 from shutil import rmtree
-from uuid import uuid4
 from typing import Any
+from uuid import uuid4
 
 from app.agents.factory import AgentRuntime, ToolDefinition, ToolFactory, ToolRegistry
 from app.core.errors import LLMInvocationError
@@ -17,16 +17,13 @@ from app.graph import (
 )
 from app.schemas import (
     AskClarificationToolInput,
+    ContextParseResult,
     ControllerResponse,
     CriticToolInput,
     EmptyToolInput,
-    FinalPromptSpec,
-    LogicSpec,
-    MapperSpec,
-    ReviewSpec,
-    StyleSpec,
+    TextArtifact,
 )
-from app.schemas.common import EventType, IntentType, ReviewErrorStage, ReviewPhase, StageName
+from app.schemas.common import EventType, IntentType, ReviewPhase, StageName
 from app.storage import CleanupService, SessionStore, TempFileManager
 from app.storage.session_store import utc_now
 
@@ -42,8 +39,9 @@ def make_temp_dir(name: str) -> Path:
 
 
 class StubController:
-    def __init__(self, responses: list[Any]) -> None:
+    def __init__(self, responses: list[Any], parsed_contexts: list[Any] | None = None) -> None:
         self.responses = list(responses)
+        self.parsed_contexts = list(parsed_contexts or [])
         self.calls = 0
 
     def run(self, state: dict[str, Any]) -> ControllerResponse:
@@ -55,10 +53,17 @@ class StubController:
             response = response(state, self.calls)
         return ControllerResponse.model_validate(response)
 
+    def parse_context(self, *, latest_input: str, state: dict[str, Any]) -> ContextParseResult:
+        if not self.parsed_contexts:
+            return ContextParseResult()
+        response = self.parsed_contexts.pop(0)
+        if callable(response):
+            response = response(latest_input, state)
+        return ContextParseResult.model_validate(response)
+
 
 class StubExecutor:
-    def __init__(self, agent_name: str, responses: list[Any]) -> None:
-        self.agent_name = agent_name
+    def __init__(self, responses: list[Any]) -> None:
         self.responses = list(responses)
         self.calls = 0
 
@@ -67,70 +72,52 @@ class StubExecutor:
         response = self.responses.pop(0)
         if callable(response):
             return response(state, self.calls)
-        if isinstance(response, Exception):
-            raise response
         return response
 
 
-def build_logic_payload(version: str = "v1") -> LogicSpec:
-    return LogicSpec(
-        chart_title=f"Pipeline {version}",
-        core_method_summary=f"Logic summary {version}",
-        containers=[],
-        nodes=[{"node_id": version, "label": f"Encoder {version}"}],
-        edges=[],
+class StubCriticExecutor:
+    def __init__(self, responses: list[Any]) -> None:
+        self.responses = list(responses)
+        self.calls = 0
+
+    def review_subject(self, state: dict[str, Any], *, subject_type: str, review_phase: ReviewPhase) -> TextArtifact:
+        self.calls += 1
+        response = self.responses.pop(0)
+        if callable(response):
+            response = response(state, subject_type, review_phase, self.calls)
+        return response
+
+
+def build_artifact(
+    tool_name: str,
+    content: str,
+    *,
+    prompt_version: str = "v2",
+    metadata: dict[str, Any] | None = None,
+) -> TextArtifact:
+    return TextArtifact(
+        tool_name=tool_name,
+        content=content,
+        prompt_version=prompt_version,
+        metadata=metadata or {},
     )
 
 
-def build_style_payload(version: str = "v1") -> StyleSpec:
-    return StyleSpec(
-        discipline="computer vision",
-        target_journal="CVPR",
-        primary_palette=["#003049"],
-        secondary_palette=["#EAE2B7"],
-        font_family=f"Font {version}",
-        line_style="clean solid lines",
-        node_shape_rules={"module": "rounded rectangle"},
-        layout_style=f"layout-{version}",
-        legend_style="compact legend",
-        forbidden_visual_elements=["3D icons"],
-        style_keywords=["academic", version],
-    )
+def business_update(slot: str, artifact: TextArtifact, stage: StageName):
+    def apply(state: dict[str, Any], _call_index: int) -> dict[str, Any]:
+        artifacts = dict(state["artifacts"])
+        artifacts[slot] = artifact
+        if slot in {"logic_artifact", "style_artifact"}:
+            artifacts["plan_review_artifact"] = None
+            artifacts["mapper_artifact"] = None
+            artifacts["final_review_artifact"] = None
+            artifacts["final_prompt_artifact"] = None
+        elif slot == "mapper_artifact":
+            artifacts["final_review_artifact"] = None
+            artifacts["final_prompt_artifact"] = None
+        return {"artifacts": artifacts, "stage": stage, "last_error": None}
 
-
-def build_mapper_payload(version: str = "v1") -> MapperSpec:
-    return MapperSpec(
-        narrative_direction=f"left-to-right-{version}",
-        section_layout=["input", "output"],
-        module_positions={"Encoder": version},
-        grouping_strategy="by processing stage",
-        edge_style_mapping={"data_flow": "solid arrows"},
-        visual_hierarchy=[f"main pipeline {version}"],
-        annotation_strategy="inline notes",
-        legend_placement="bottom-right",
-    )
-
-
-def build_review_payload(
-    passed: bool = True,
-    error_stage: ReviewErrorStage | None = None,
-) -> ReviewSpec:
-    return ReviewSpec(
-        passed=passed,
-        error_stage=error_stage,
-        reason="No conflicts found." if passed else "Modules overlap visually.",
-        fix_suggestion=[] if passed else ["Increase spacing."],
-    )
-
-
-def build_final_payload(version: str = "v1") -> FinalPromptSpec:
-    return FinalPromptSpec(
-        final_prompt_en=f"Final prompt {version}",
-        final_prompt_cn=f"最终提示词 {version}",
-        prompt_version=version,
-        generation_notes=["Keep labels short."],
-        ready_for_generation=True,
-    )
+    return apply
 
 
 def build_tool_call(tool_name: str, arguments: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -155,14 +142,14 @@ def build_runtime(
     logician: StubExecutor | None = None,
     style_configurator: StubExecutor | None = None,
     visual_mapper: StubExecutor | None = None,
-    critic: StubExecutor | None = None,
+    critic: StubCriticExecutor | None = None,
     summary: StubExecutor | None = None,
 ) -> AgentRuntime:
-    logician = logician or StubExecutor("logician", [])
-    style_configurator = style_configurator or StubExecutor("style_configurator", [])
-    visual_mapper = visual_mapper or StubExecutor("visual_mapper", [])
-    critic = critic or StubExecutor("critic", [])
-    summary = summary or StubExecutor("summary", [])
+    logician = logician or StubExecutor([])
+    style_configurator = style_configurator or StubExecutor([])
+    visual_mapper = visual_mapper or StubExecutor([])
+    critic = critic or StubCriticExecutor([])
+    summary = summary or StubExecutor([])
 
     tool_registry = ToolRegistry(
         [
@@ -247,7 +234,7 @@ def test_workflow_graph_contains_only_controller_and_tool_executor() -> None:
     assert "visual_mapper" not in graph_nodes
 
 
-def test_workflow_runner_completes_new_task_path_via_tool_calls() -> None:
+def test_workflow_runner_completes_new_task_path_via_text_artifacts() -> None:
     runtime = build_runtime(
         controller=StubController(
             [
@@ -264,90 +251,133 @@ def test_workflow_runner_completes_new_task_path_via_tool_calls() -> None:
                 ),
                 build_controller_response(build_tool_call("summary_tool")),
                 build_controller_response(assistant_text="流程完成"),
-            ]
+            ],
+            parsed_contexts=[
+                {
+                    "discipline": "computer vision",
+                    "target_venue": "CVPR",
+                    "target_venue_type": "conference",
+                    "special_requirements": [],
+                    "special_requirements_action": "append",
+                }
+            ],
         ),
         logician=StubExecutor(
-            "logician",
-            [{"payload_logic": build_logic_payload(), "stage": StageName.LOGIC_READY, "last_error": None}],
+            [
+                business_update(
+                    "logic_artifact",
+                    build_artifact("logician", "Logic artifact content"),
+                    StageName.LOGIC_READY,
+                )
+            ],
         ),
         style_configurator=StubExecutor(
-            "style_configurator",
-            [{"payload_style": build_style_payload(), "stage": StageName.STYLE_READY, "last_error": None}],
+            [
+                business_update(
+                    "style_artifact",
+                    build_artifact("style_configurator", "Style artifact content"),
+                    StageName.STYLE_READY,
+                )
+            ],
         ),
         visual_mapper=StubExecutor(
-            "visual_mapper",
-            [{"payload_mapper": build_mapper_payload(), "stage": StageName.MAPPING_READY, "last_error": None}],
+            [
+                business_update(
+                    "mapper_artifact",
+                    build_artifact("visual_mapper", "Mapper artifact content"),
+                    StageName.MAPPING_READY,
+                )
+            ],
         ),
-        critic=StubExecutor(
-            "critic",
-            [{"payload_review": build_review_payload(), "stage": StageName.REVIEWING, "last_error": None}] * 2,
+        critic=StubCriticExecutor(
+            [
+                build_artifact("critic", "审查通过，数据无冲突。", metadata={"passed": True, "subject_type": "logician"}),
+                build_artifact("critic", "审查通过，数据无冲突。", metadata={"passed": True, "subject_type": "style_configurator"}),
+                build_artifact("critic", "审查通过，数据无冲突。", metadata={"passed": True, "subject_type": "visual_mapper"}),
+            ]
         ),
         summary=StubExecutor(
-            "summary",
-            [{"payload_final": build_final_payload(), "stage": StageName.PROMPT_READY, "last_error": None}],
+            [
+                business_update(
+                    "final_prompt_artifact",
+                    build_artifact(
+                        "summary",
+                        "A professional, scientific diagram in the style of a top-tier conference.",
+                        metadata={"ready_for_generation": True},
+                    ),
+                    StageName.PROMPT_READY,
+                )
+            ],
         ),
     )
     session_store, _, event_store, _, runner = build_workflow_components(runtime)
     state = build_initial_graph_state("session-new")
-    state["source_text"] = "Encoder decoder pipeline."
     session_store.create_session("session-new", state)
 
-    final_state = runner.run("session-new", "req-1")
+    final_state = runner.run("session-new", "req-1", source_text="Encoder decoder pipeline for CVPR.")
 
     assert final_state["stage"] == StageName.PROMPT_READY
-    assert final_state["payload_final"].ready_for_generation is True
+    assert final_state["artifacts"]["final_prompt_artifact"] is not None
     assert final_state["intent"] == IntentType.NEW_TASK
-    assert final_state["controller_tool_calls"] == []
+    assert final_state["parsed_target_venue"] == "CVPR"
     assert EventType.PROMPT_READY in [event.event_type for event in event_store.list_events("session-new")]
 
 
-def test_workflow_runner_interrupts_and_resumes_for_clarification() -> None:
+def test_workflow_runner_interrupts_when_required_context_missing_then_resumes() -> None:
     runtime = build_runtime(
         controller=StubController(
             [
-                build_controller_response(
-                    build_tool_call(
-                        "ask_clarification",
-                        {
-                            "question": "请补充研究方法的关键步骤。",
-                            "reason": "missing_context",
-                            "missing_fields": ["source_text"],
-                        },
-                    )
-                ),
                 build_controller_response(build_tool_call("logician_tool")),
                 build_controller_response(),
-            ]
+            ],
+            parsed_contexts=[
+                {
+                    "discipline": None,
+                    "target_venue": None,
+                    "target_venue_type": "unknown",
+                    "special_requirements": [],
+                    "special_requirements_action": "append",
+                },
+                {
+                    "discipline": "computer vision",
+                    "target_venue": "CVPR",
+                    "target_venue_type": "conference",
+                    "special_requirements": ["keep it minimalist"],
+                    "special_requirements_action": "append",
+                },
+            ],
         ),
         logician=StubExecutor(
-            "logician",
-            [{"payload_logic": build_logic_payload(), "stage": StageName.LOGIC_READY, "last_error": None}],
+            [
+                business_update(
+                    "logic_artifact",
+                    build_artifact("logician", "Logic artifact content"),
+                    StageName.LOGIC_READY,
+                )
+            ],
         ),
     )
     session_store, _, event_store, _, runner = build_workflow_components(runtime)
     state = build_initial_graph_state("session-clarify")
-    state["source_text"] = "Original task."
     session_store.create_session("session-clarify", state)
 
-    interrupted_state = runner.run("session-clarify", "req-3")
+    interrupted_state = runner.run("session-clarify", "req-3", source_text="Original task without venue.")
 
     assert interrupted_state["stage"] == StageName.CLARIFYING
     assert interrupted_state["needs_clarification"] is True
-    assert interrupted_state["interrupted"] is True
-    assert interrupted_state["pending_clarification"].question == "请补充研究方法的关键步骤。"
+    assert interrupted_state["pending_clarification"] is not None
 
-    resumed_state = runner.resume("session-clarify", "req-4", "Encoder decoder details.")
+    resumed_state = runner.resume("session-clarify", "req-4", "领域是计算机视觉，目标会议是 CVPR。")
 
     assert resumed_state["stage"] == StageName.LOGIC_READY
-    assert resumed_state["needs_clarification"] is False
-    assert resumed_state["interrupted"] is False
-    assert resumed_state["user_feedback"] == "Encoder decoder details."
+    assert resumed_state["parsed_discipline"] == "computer vision"
+    assert resumed_state["parsed_target_venue"] == "CVPR"
     assert EventType.CLARIFICATION_REQUIRED in [
         event.event_type for event in event_store.list_events("session-clarify")
     ]
 
 
-def test_workflow_runner_tracks_post_plan_and_post_mapper_review_counts_separately() -> None:
+def test_workflow_runner_tracks_review_counts_by_gate() -> None:
     runtime = build_runtime(
         controller=StubController(
             [
@@ -370,50 +400,72 @@ def test_workflow_runner_tracks_post_plan_and_post_mapper_review_counts_separate
                 build_controller_response(
                     build_tool_call("critic_tool", {"review_phase": ReviewPhase.POST_MAPPER})
                 ),
-                build_controller_response(build_tool_call("summary_tool")),
                 build_controller_response(),
-            ]
+            ],
+            parsed_contexts=[
+                {
+                    "discipline": "computer vision",
+                    "target_venue": "CVPR",
+                    "target_venue_type": "conference",
+                    "special_requirements": [],
+                    "special_requirements_action": "append",
+                }
+            ],
         ),
         logician=StubExecutor(
-            "logician",
-            [{"payload_logic": build_logic_payload(), "stage": StageName.LOGIC_READY, "last_error": None}],
+            [
+                business_update(
+                    "logic_artifact",
+                    build_artifact("logician", "Logic artifact"),
+                    StageName.LOGIC_READY,
+                )
+            ],
         ),
         style_configurator=StubExecutor(
-            "style_configurator",
             [
-                {"payload_style": build_style_payload("v1"), "stage": StageName.STYLE_READY, "last_error": None},
-                {"payload_style": build_style_payload("v2"), "stage": StageName.STYLE_READY, "last_error": None},
+                business_update(
+                    "style_artifact",
+                    build_artifact("style_configurator", "Style artifact v1"),
+                    StageName.STYLE_READY,
+                ),
+                business_update(
+                    "style_artifact",
+                    build_artifact("style_configurator", "Style artifact v2"),
+                    StageName.STYLE_READY,
+                ),
             ],
         ),
         visual_mapper=StubExecutor(
-            "visual_mapper",
             [
-                {"payload_mapper": build_mapper_payload("v1"), "stage": StageName.MAPPING_READY, "last_error": None},
-                {"payload_mapper": build_mapper_payload("v2"), "stage": StageName.MAPPING_READY, "last_error": None},
+                business_update(
+                    "mapper_artifact",
+                    build_artifact("visual_mapper", "Mapper artifact v1"),
+                    StageName.MAPPING_READY,
+                ),
+                business_update(
+                    "mapper_artifact",
+                    build_artifact("visual_mapper", "Mapper artifact v2"),
+                    StageName.MAPPING_READY,
+                ),
             ],
         ),
-        critic=StubExecutor(
-            "critic",
+        critic=StubCriticExecutor(
             [
-                {"payload_review": build_review_payload(False, ReviewErrorStage.STYLE_CONFIGURATOR), "stage": StageName.REVIEWING, "last_error": None},
-                {"payload_review": build_review_payload(), "stage": StageName.REVIEWING, "last_error": None},
-                {"payload_review": build_review_payload(False, ReviewErrorStage.VISUAL_MAPPER), "stage": StageName.REVIEWING, "last_error": None},
-                {"payload_review": build_review_payload(), "stage": StageName.REVIEWING, "last_error": None},
-            ],
-        ),
-        summary=StubExecutor(
-            "summary",
-            [{"payload_final": build_final_payload(), "stage": StageName.PROMPT_READY, "last_error": None}],
+                build_artifact("critic", "审查通过，数据无冲突。", metadata={"passed": True, "subject_type": "logician"}),
+                build_artifact("critic", "审查失败：整体风格严重不符合计算机视觉学科。", metadata={"passed": False, "subject_type": "style_configurator"}),
+                build_artifact("critic", "审查通过，数据无冲突。", metadata={"passed": True, "subject_type": "logician"}),
+                build_artifact("critic", "审查通过，数据无冲突。", metadata={"passed": True, "subject_type": "style_configurator"}),
+                build_artifact("critic", "审查失败：可视化布局遗漏关键模块。", metadata={"passed": False, "subject_type": "visual_mapper"}),
+                build_artifact("critic", "审查通过，数据无冲突。", metadata={"passed": True, "subject_type": "visual_mapper"}),
+            ]
         ),
     )
     session_store, _, _, _, runner = build_workflow_components(runtime)
     state = build_initial_graph_state("session-review-counts")
-    state["source_text"] = "Encoder decoder pipeline."
     session_store.create_session("session-review-counts", state)
 
-    final_state = runner.run("session-review-counts", "req-5")
+    final_state = runner.run("session-review-counts", "req-5", source_text="Encoder decoder pipeline.")
 
-    assert final_state["stage"] == StageName.PROMPT_READY
     assert final_state["post_plan_review_rounds_in_loop"] == 1
     assert final_state["post_mapper_review_rounds_in_loop"] == 1
 
@@ -436,41 +488,71 @@ def test_workflow_runner_bypasses_after_third_post_mapper_review_failure() -> No
                 ),
                 build_controller_response(build_tool_call("summary_tool")),
                 build_controller_response(),
-            ]
+            ],
+            parsed_contexts=[
+                {
+                    "discipline": "computer vision",
+                    "target_venue": "CVPR",
+                    "target_venue_type": "conference",
+                    "special_requirements": [],
+                    "special_requirements_action": "append",
+                }
+            ],
         ),
         visual_mapper=StubExecutor(
-            "visual_mapper",
             [
-                {"payload_mapper": build_mapper_payload("v1"), "stage": StageName.MAPPING_READY, "last_error": None},
-                {"payload_mapper": build_mapper_payload("v2"), "stage": StageName.MAPPING_READY, "last_error": None},
-                {"payload_mapper": build_mapper_payload("v3"), "stage": StageName.MAPPING_READY, "last_error": None},
+                business_update(
+                    "mapper_artifact",
+                    build_artifact("visual_mapper", "Mapper artifact v1"),
+                    StageName.MAPPING_READY,
+                ),
+                business_update(
+                    "mapper_artifact",
+                    build_artifact("visual_mapper", "Mapper artifact v2"),
+                    StageName.MAPPING_READY,
+                ),
+                business_update(
+                    "mapper_artifact",
+                    build_artifact("visual_mapper", "Mapper artifact v3"),
+                    StageName.MAPPING_READY,
+                ),
             ],
         ),
-        critic=StubExecutor(
-            "critic",
+        critic=StubCriticExecutor(
             [
-                {"payload_review": build_review_payload(False, ReviewErrorStage.VISUAL_MAPPER), "stage": StageName.REVIEWING, "last_error": None},
-                {"payload_review": build_review_payload(False, ReviewErrorStage.VISUAL_MAPPER), "stage": StageName.REVIEWING, "last_error": None},
-                {"payload_review": build_review_payload(False, ReviewErrorStage.VISUAL_MAPPER), "stage": StageName.REVIEWING, "last_error": None},
-            ],
+                build_artifact("critic", "审查失败：连接关系不合理。", metadata={"passed": False, "subject_type": "visual_mapper"}),
+                build_artifact("critic", "审查失败：连接关系不合理。", metadata={"passed": False, "subject_type": "visual_mapper"}),
+                build_artifact("critic", "审查失败：连接关系不合理。", metadata={"passed": False, "subject_type": "visual_mapper"}),
+            ]
         ),
         summary=StubExecutor(
-            "summary",
-            [{"payload_final": build_final_payload("warning"), "stage": StageName.PROMPT_READY, "last_error": None}],
+            [
+                business_update(
+                    "final_prompt_artifact",
+                    build_artifact(
+                        "summary",
+                        "A professional, scientific diagram in the style of a top-tier conference.",
+                        metadata={"ready_for_generation": True},
+                    ),
+                    StageName.PROMPT_READY,
+                )
+            ],
         ),
     )
     session_store, _, event_store, _, runner = build_workflow_components(runtime)
     state = build_initial_graph_state("session-review-warning")
-    state["source_text"] = "Encoder decoder pipeline."
-    state["payload_logic"] = build_logic_payload("base")
-    state["payload_style"] = build_style_payload("base")
+    state["parsed_discipline"] = "computer vision"
+    state["parsed_target_venue"] = "CVPR"
+    state["parsed_target_venue_type"] = "conference"
+    state["artifacts"]["logic_artifact"] = build_artifact("logician", "Logic base")
+    state["artifacts"]["style_artifact"] = build_artifact("style_configurator", "Style base")
     session_store.create_session("session-review-warning", state)
 
-    final_state = runner.run("session-review-warning", "req-6")
+    final_state = runner.run("session-review-warning", "req-6", user_feedback="Adjust layout only.")
 
     assert final_state["stage"] == StageName.PROMPT_READY
     assert final_state["post_mapper_review_rounds_in_loop"] == 3
-    assert final_state["payload_review"].passed is True
+    assert final_state["artifacts"]["final_review_artifact"].metadata["passed"] is True
     assert final_state["bypass_warnings"][-1].warning_type == "review_limit_reached"
     assert EventType.WORKFLOW_WARNING in [
         event.event_type for event in event_store.list_events("session-review-warning")
@@ -489,15 +571,23 @@ def test_workflow_failure_event_includes_diagnostic_details() -> None:
                         "error": "401 Unauthorized",
                     },
                 )
-            ]
+            ],
+            parsed_contexts=[
+                {
+                    "discipline": "computer vision",
+                    "target_venue": "CVPR",
+                    "target_venue_type": "conference",
+                    "special_requirements": [],
+                    "special_requirements_action": "append",
+                }
+            ],
         )
     )
     session_store, _, event_store, _, runner = build_workflow_components(runtime)
     state = build_initial_graph_state("session-controller-failed")
-    state["source_text"] = "Encoder decoder pipeline."
     session_store.create_session("session-controller-failed", state)
 
-    final_state = runner.run("session-controller-failed", "req-7")
+    final_state = runner.run("session-controller-failed", "req-7", source_text="Encoder decoder pipeline.")
 
     assert final_state["stage"] == StageName.FAILED
     error_event = [
@@ -516,11 +606,25 @@ def test_cleanup_service_clears_workflow_state_for_expired_sessions() -> None:
             [
                 build_controller_response(build_tool_call("summary_tool")),
                 build_controller_response(),
-            ]
+            ],
+            parsed_contexts=[
+                {
+                    "discipline": "computer vision",
+                    "target_venue": "CVPR",
+                    "target_venue_type": "conference",
+                    "special_requirements": [],
+                    "special_requirements_action": "append",
+                }
+            ],
         ),
         summary=StubExecutor(
-            "summary",
-            [{"payload_final": build_final_payload(), "stage": StageName.PROMPT_READY, "last_error": None}],
+            [
+                business_update(
+                    "final_prompt_artifact",
+                    build_artifact("summary", "A professional prompt", metadata={"ready_for_generation": True}),
+                    StageName.PROMPT_READY,
+                )
+            ],
         ),
     )
     temp_dir = make_temp_dir("workflow-cleanup")
@@ -533,10 +637,12 @@ def test_cleanup_service_clears_workflow_state_for_expired_sessions() -> None:
             session_cleanup_hooks=[runner.clear_session],
         )
         state = build_initial_graph_state("session-cleanup-workflow")
-        state["source_text"] = "Encoder decoder pipeline."
+        state["parsed_discipline"] = "computer vision"
+        state["parsed_target_venue"] = "CVPR"
+        state["parsed_target_venue_type"] = "conference"
         record = session_store.create_session("session-cleanup-workflow", state)
         temp_file_manager.ensure_session_directories(record.session_id)
-        runner.run("session-cleanup-workflow", "req-8")
+        runner.run("session-cleanup-workflow", "req-8", user_feedback="continue")
         record.expires_at = utc_now() - timedelta(seconds=1)
 
         cleanup_service.purge_expired_sessions()

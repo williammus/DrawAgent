@@ -39,8 +39,10 @@ class GenerationService:
             )
 
         record = self.session_store.get_session(session_id)
-        payload_final = record.state["payload_final"]
-        if payload_final is None or not payload_final.ready_for_generation:
+        final_prompt_artifact = record.state["artifacts"].get("final_prompt_artifact")
+        if final_prompt_artifact is None or not final_prompt_artifact.metadata.get(
+            "ready_for_generation", True
+        ):
             raise InputValidationError(
                 "Session does not have a confirmed final prompt ready for image generation.",
                 details={"session_id": session_id},
@@ -58,7 +60,7 @@ class GenerationService:
                     self._generate_sync,
                     session_id,
                     request_id,
-                    payload_final.final_prompt_en,
+                    final_prompt_artifact.content,
                 )
             except Exception as exc:
                 self._record_generation_failure(session_id, request_id, exc)

@@ -44,26 +44,26 @@ def test_default_prompt_versions_all_resolve_to_v2() -> None:
         assert registry.get(agent_name).version == "v2"
 
 
-def test_v2_prompt_required_variables_match_stage3_boundaries() -> None:
+def test_v2_prompt_required_variables_match_stage4_boundaries() -> None:
     registry = PromptRegistry()
     renderer = PromptRenderer()
 
     assert renderer.required_variables(registry.load_text("logician")) == {
         "source_text",
-        "source_files",
-        "focus_area",
         "modification_instruction",
-        "research_context",
+        "previous_logic_artifact",
     }
     assert renderer.required_variables(registry.load_text("style_configurator")) == {
-        "source_text",
-        "research_context",
+        "parsed_discipline",
+        "parsed_target_venue",
+        "parsed_target_venue_type",
+        "parsed_special_requirements",
         "user_feedback",
+        "source_text",
         "style_knowledge",
     }
-    assert "source_text" not in renderer.required_variables(registry.load_text("visual_mapper"))
     assert "source_text" not in renderer.required_variables(registry.load_text("critic"))
-    assert "source_text" not in renderer.required_variables(registry.load_text("summary"))
+    assert "subject_type" in renderer.required_variables(registry.load_text("critic"))
 
 
 def test_all_default_v2_prompts_render_with_expected_variables() -> None:
@@ -77,8 +77,16 @@ def test_all_default_v2_prompts_render_with_expected_variables() -> None:
                 "current_intent": "new_task",
                 "source_text": "full paper content",
                 "user_feedback": "",
-                "research_context": {"discipline": "computer vision"},
                 "payload_status_summary": {"logic": False, "style": False},
+                "parsed_discipline": "computer vision",
+                "parsed_target_venue": "CVPR",
+                "parsed_target_venue_type": "conference",
+                "parsed_special_requirements": ["avoid 3D icons"],
+                "logic_artifact": "",
+                "style_artifact": "",
+                "plan_review_artifact": "",
+                "mapper_artifact": "",
+                "final_review_artifact": "",
                 "last_tool_results": [],
                 "bypass_warnings": [],
                 "clarification_rounds_in_loop": 0,
@@ -92,27 +100,28 @@ def test_all_default_v2_prompts_render_with_expected_variables() -> None:
             registry.load_text("logician"),
             {
                 "source_text": "source text",
-                "source_files": [],
-                "focus_area": "",
                 "modification_instruction": "",
-                "research_context": {},
+                "previous_logic_artifact": "",
             },
         ),
         "style_configurator": renderer.render(
             registry.load_text("style_configurator"),
             {
-                "source_text": "source text",
-                "research_context": {"discipline": "computer vision"},
+                "parsed_discipline": "computer vision",
+                "parsed_target_venue": "CVPR",
+                "parsed_target_venue_type": "conference",
+                "parsed_special_requirements": ["avoid clutter"],
                 "user_feedback": "",
+                "source_text": "source text",
                 "style_knowledge": {"profile_name": "general_scientific"},
             },
         ),
         "visual_mapper": renderer.render(
             registry.load_text("visual_mapper"),
             {
-                "payload_logic": {"nodes": []},
-                "payload_style": {"primary_palette": []},
-                "research_context": {},
+                "parsed_discipline": "computer vision",
+                "logic_artifact": "logic artifact",
+                "style_artifact": "style artifact",
                 "user_feedback": "",
             },
         ),
@@ -120,26 +129,26 @@ def test_all_default_v2_prompts_render_with_expected_variables() -> None:
             registry.load_text("critic"),
             {
                 "review_phase": "post_plan",
-                "payload_logic": {"nodes": []},
-                "payload_style": {"primary_palette": []},
-                "payload_mapper": {},
+                "subject_type": "logician",
+                "pre_data": "source text",
+                "artifact_data": "logic artifact",
             },
         ),
         "summary": renderer.render(
             registry.load_text("summary"),
             {
-                "payload_logic": {"nodes": []},
-                "payload_style": {"primary_palette": []},
-                "payload_mapper": {"section_layout": []},
-                "payload_review": {"passed": True},
+                "logic_artifact": "logic artifact",
+                "mapper_artifact": "mapper artifact",
+                "style_artifact": "style artifact",
+                "final_review_artifact": "审查通过，数据无冲突。",
                 "bypass_warnings": [],
             },
         ),
     }
 
-    assert "tool calling" in rendered["orchestrator"]
-    assert '"chart_title"' in rendered["logician"]
-    assert '"discipline"' in rendered["style_configurator"]
-    assert '"narrative_direction"' in rendered["visual_mapper"]
-    assert '"passed"' in rendered["critic"]
-    assert '"final_prompt_en"' in rendered["summary"]
+    assert "ask_clarification" in rendered["orchestrator"]
+    assert "逻辑节点" in rendered["logician"]
+    assert "视觉设计指南" in rendered["style_configurator"]
+    assert "视觉元素规格书" in rendered["visual_mapper"]
+    assert "前置agent类型" in rendered["critic"]
+    assert "A professional, scientific diagram" in rendered["summary"]

@@ -2,30 +2,36 @@ from __future__ import annotations
 
 from typing import Any
 
-from app.agents.base import StructuredAgentExecutor
+from app.agents.base import TextArtifactExecutor
 from app.graph.state import GraphState
-from app.schemas import LogicSpec, StageName
+from app.schemas import StageName, TextArtifact
 
 
-class LogicianExecutor(StructuredAgentExecutor[LogicSpec]):
+class LogicianExecutor(TextArtifactExecutor):
     agent_name = "logician"
-    output_model = LogicSpec
+    artifact_slot = "logic_artifact"
 
     def build_prompt_variables(self, state: GraphState) -> dict[str, Any]:
         source_text = self.require_field(state, "source_text")
-        research_context = state["research_context"] or {}
-
+        artifacts = state.get("artifacts") or {}
         return {
             "source_text": source_text,
             "source_files": [file_meta.model_dump(mode="json") for file_meta in state["source_files"]],
-            "focus_area": research_context.get("focus_area", ""),
             "modification_instruction": state["user_feedback"] or "",
-            "research_context": research_context,
+            "previous_logic_artifact": (
+                artifacts["logic_artifact"].content if artifacts.get("logic_artifact") is not None else ""
+            ),
         }
 
-    def build_state_updates(self, state: GraphState, artifact: LogicSpec) -> dict[str, Any]:
+    def build_state_updates(self, state: GraphState, artifact: TextArtifact) -> dict[str, Any]:
+        artifacts = dict(state["artifacts"])
+        artifacts[self.artifact_slot] = artifact
+        artifacts["plan_review_artifact"] = None
+        artifacts["mapper_artifact"] = None
+        artifacts["final_review_artifact"] = None
+        artifacts["final_prompt_artifact"] = None
         return {
-            "payload_logic": artifact,
+            "artifacts": artifacts,
             "stage": StageName.LOGIC_READY,
             "last_error": None,
         }

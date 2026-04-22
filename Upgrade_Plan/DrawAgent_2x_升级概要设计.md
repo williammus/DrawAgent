@@ -44,8 +44,15 @@
   - `style_configurator`
 - 以下工具不得直接读取 `source_text`，只能消费上游产物：
   - `visual_mapper`
-  - `critic`
   - `summary`
+- `critic` 的输入不是固定禁止 `source_text`，而是按审查对象动态变化：
+  - `type`
+  - `pre_data`
+  - `data`
+- 其中：
+  - 审查 `logician` 时，`pre_data = source_text`
+  - 审查 `style_configurator` 时，`pre_data = {parsed_discipline, parsed_target_venue, parsed_target_venue_type, parsed_special_requirements}`
+  - 审查 `visual_mapper` 时，`pre_data = {logic_artifact, style_artifact}`
 
 ### 2.4 审查链路结论
 - `critic` 必须保留两个审查关口：
@@ -237,6 +244,10 @@
   - `source_text`
   - `source_text_locked`
   - `user_feedback`
+  - `parsed_discipline`
+  - `parsed_target_venue`
+  - `parsed_target_venue_type`
+  - `parsed_special_requirements`
   - `artifacts`
   - `pending_clarification`
   - `loop_id`
@@ -248,6 +259,9 @@
   - `bypass_warnings`
   - `generated_image_meta`
   - `last_error`
+- 上述解析字段由主控 agent 从用户输入中抽取并写入 `GraphState`。
+- 若 `parsed_discipline`、`parsed_target_venue`、`parsed_target_venue_type` 任一为空或 `unknown`，主控必须优先触发澄清。
+- `parsed_special_requirements` 允许后续 `user_feedback` 追加；若用户明确表达替换语义，则以最新反馈覆盖。
 
 ### 6.4 Artifact 设计
 - Artifact 改为文本化存储，不再要求逻辑/风格/映射必须符合固定字段 schema。
@@ -269,19 +283,25 @@
 
 #### critic(post_plan)
 输入：
-- `logic_artifact`
-- `style_artifact`
+- 第一轮：
+  - `type = logician`
+  - `pre_data = source_text`
+  - `data = logic_artifact`
+- 第二轮：
+  - `type = style_configurator`
+  - `pre_data = {parsed_discipline, parsed_target_venue, parsed_target_venue_type, parsed_special_requirements}`
+  - `data = style_artifact`
 
 职责：
-- 检查逻辑与风格是否冲突
-- 检查是否已经具备进入 `visual_mapper` 的条件
+- 分别检查逻辑产物与风格产物是否可靠
+- 只有两者都通过，才具备进入 `visual_mapper` 的条件
 - 给出失败原因和回退建议
 
 #### critic(post_mapper)
 输入：
-- `logic_artifact`
-- `style_artifact`
-- `mapper_artifact`
+- `type = visual_mapper`
+- `pre_data = {logic_artifact, style_artifact}`
+- `data = mapper_artifact`
 
 职责：
 - 检查映射结果与上游产物是否一致
@@ -329,12 +349,11 @@
 
 #### critic
 输入：
-- 对应阶段所需 artifact
+- `type`
+- `pre_data`
+- `data`
 - 审查轮次
 - warning 信息
-
-不得输入：
-- `source_text`
 
 #### summary
 输入：
@@ -523,9 +542,10 @@
 ---
 
 ## 11. 风险与注意事项
-- 当前仓库中已有部分 `v2.md`，但其内容仍需补齐和微调，不能直接视为可用实现。
+- 当前仓库中的正式 `v2.md` 必须以各 agent 的 `v2-informal.md` 为最小改动基线重写；`critic` 必须以 `critic/v2-new.md` 为基线重写，不能直接沿用之前阶段的兼容版 `v2.md`。
 - 当前 prompt 模板语法需要统一，避免渲染器与模板变量占位符不匹配。
 - 从结构化 JSON artifact 切换到文本 artifact 后，artifact API、前端展示、测试用例都需要同步重写，不能只改 Agent 层。
+- 文本 artifact 的正文不再强制统一格式；如需附加说明或控制信息，应走旁路 metadata，而不是重新把正文收紧成 JSON 或固定模板。
 - 附件输入链路与 `source_text` 首输入模式是冲突关系，后续实施时必须彻底收敛到单一路径。
 
 ---

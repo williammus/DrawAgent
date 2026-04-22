@@ -8,7 +8,7 @@ from fastapi.testclient import TestClient
 
 from app.image import MockImageAdapter
 from app.main import app
-from app.schemas import FinalPromptSpec
+from app.schemas import TextArtifact
 from app.schemas.events import StageCompletedEvent, StageStartedEvent
 from app.schemas.common import StageName
 
@@ -127,12 +127,11 @@ def test_phase5_api_flow() -> None:
 
         record = client.app.state.session_store.get_session(session_id)
         new_state = deepcopy(record.state)
-        new_state["payload_final"] = FinalPromptSpec(
-            final_prompt_en="A clean scientific pipeline figure.",
-            final_prompt_cn="一张清晰的科研流程图。",
+        new_state["artifacts"]["final_prompt_artifact"] = TextArtifact(
+            tool_name="summary",
+            content="A clean scientific pipeline figure.",
             prompt_version="v-test",
-            generation_notes=["Use compact labels."],
-            ready_for_generation=True,
+            metadata={"ready_for_generation": True},
         )
         client.app.state.session_store.update_state(session_id, new_state)
 

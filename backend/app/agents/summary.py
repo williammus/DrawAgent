@@ -2,38 +2,43 @@ from __future__ import annotations
 
 from typing import Any
 
-from app.agents.base import StructuredAgentExecutor
-from app.core.errors import ReviewRejectedError
+from app.agents.base import TextArtifactExecutor
+from app.agents.helpers import artifact_content
+from app.core.errors import InputValidationError
 from app.graph.state import GraphState
-from app.schemas import FinalPromptSpec, StageName
+from app.schemas import StageName, TextArtifact
 
 
-class SummaryExecutor(StructuredAgentExecutor[FinalPromptSpec]):
+class SummaryExecutor(TextArtifactExecutor):
     agent_name = "summary"
-    output_model = FinalPromptSpec
+    artifact_slot = "final_prompt_artifact"
 
     def build_prompt_variables(self, state: GraphState) -> dict[str, Any]:
-        payload_logic = self.require_field(state, "payload_logic")
-        payload_style = self.require_field(state, "payload_style")
-        payload_mapper = self.require_field(state, "payload_mapper")
-        payload_review = self.require_field(state, "payload_review")
-        if not payload_review.passed:
-            raise ReviewRejectedError(
-                "Summary executor requires a passed review before prompt assembly.",
-                details={"review": payload_review.model_dump(mode="json")},
+        logic_artifact = artifact_content(state, "logic_artifact")
+        style_artifact = artifact_content(state, "style_artifact")
+        mapper_artifact = artifact_content(state, "mapper_artifact")
+        final_review_artifact = artifact_content(state, "final_review_artifact")
+        if not logic_artifact or not style_artifact or not mapper_artifact:
+            raise InputValidationError(
+                "Summary executor requires logic, style, and mapper artifacts before prompt assembly."
             )
 
         return {
-            "payload_logic": payload_logic.model_dump(mode="json"),
-            "payload_style": payload_style.model_dump(mode="json"),
-            "payload_mapper": payload_mapper.model_dump(mode="json"),
-            "payload_review": payload_review.model_dump(mode="json"),
+            "logic_artifact": logic_artifact,
+            "style_artifact": style_artifact,
+            "mapper_artifact": mapper_artifact,
+            "final_review_artifact": final_review_artifact,
             "bypass_warnings": [warning.model_dump(mode="json") for warning in state["bypass_warnings"]],
         }
 
-    def build_state_updates(self, state: GraphState, artifact: FinalPromptSpec) -> dict[str, Any]:
+    def build_artifact_metadata(self, state: GraphState, content: str) -> dict[str, Any]:
+        return {"ready_for_generation": True}
+
+    def build_state_updates(self, state: GraphState, artifact: TextArtifact) -> dict[str, Any]:
+        artifacts = dict(state["artifacts"])
+        artifacts[self.artifact_slot] = artifact
         return {
-            "payload_final": artifact,
+            "artifacts": artifacts,
             "stage": StageName.PROMPT_READY,
             "last_error": None,
         }

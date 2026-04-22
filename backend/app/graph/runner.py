@@ -106,9 +106,15 @@ class WorkflowRunner:
             working_state["source_text_locked"] = True
             working_state["user_feedback"] = None
             working_state["loop_origin"] = "source_text"
+            working_state["parsed_discipline"] = None
+            working_state["parsed_target_venue"] = None
+            working_state["parsed_target_venue_type"] = None
+            working_state["parsed_special_requirements"] = []
+            working_state["input_parse_pending"] = True
         elif user_feedback is not None:
             working_state["user_feedback"] = user_feedback
             working_state["loop_origin"] = "user_feedback"
+            working_state["input_parse_pending"] = True
 
         if source_text is not None or user_feedback is not None:
             working_state["last_error"] = None

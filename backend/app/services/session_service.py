@@ -53,44 +53,26 @@ class SessionService:
             logic_artifact=self._resolve_artifact_slot(
                 artifacts,
                 "logic_artifact",
-                legacy_payload=state.get("payload_logic"),
-                tool_name="logician",
-                prompt_version="legacy-json",
             ),
             style_artifact=self._resolve_artifact_slot(
                 artifacts,
                 "style_artifact",
-                legacy_payload=state.get("payload_style"),
-                tool_name="style_configurator",
-                prompt_version="legacy-json",
             ),
             plan_review_artifact=self._resolve_artifact_slot(
                 artifacts,
                 "plan_review_artifact",
-                legacy_payload=None,
-                tool_name="critic",
-                prompt_version="legacy-json",
             ),
             mapper_artifact=self._resolve_artifact_slot(
                 artifacts,
                 "mapper_artifact",
-                legacy_payload=state.get("payload_mapper"),
-                tool_name="visual_mapper",
-                prompt_version="legacy-json",
             ),
             final_review_artifact=self._resolve_artifact_slot(
                 artifacts,
                 "final_review_artifact",
-                legacy_payload=state.get("payload_review"),
-                tool_name="critic",
-                prompt_version="legacy-json",
             ),
             final_prompt_artifact=self._resolve_artifact_slot(
                 artifacts,
                 "final_prompt_artifact",
-                legacy_payload=state.get("payload_final"),
-                tool_name="summary",
-                prompt_version="legacy-json",
             ),
         )
 
@@ -225,23 +207,8 @@ class SessionService:
         self,
         artifacts: dict[str, TextArtifact | None],
         slot_name: str,
-        *,
-        legacy_payload: object | None,
-        tool_name: str,
-        prompt_version: str,
     ) -> TextArtifact | None:
         artifact = artifacts.get(slot_name)
         if artifact is not None:
             return artifact
-        if legacy_payload is None:
-            return None
-
-        if hasattr(legacy_payload, "model_dump_json"):
-            content = legacy_payload.model_dump_json(indent=2)  # type: ignore[union-attr]
-        else:
-            content = str(legacy_payload)
-        return TextArtifact(
-            tool_name=tool_name,
-            content=content,
-            prompt_version=prompt_version,
-        )
+        return None

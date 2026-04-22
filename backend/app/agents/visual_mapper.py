@@ -2,28 +2,36 @@ from __future__ import annotations
 
 from typing import Any
 
-from app.agents.base import StructuredAgentExecutor
+from app.agents.base import TextArtifactExecutor
+from app.agents.helpers import artifact_content
+from app.core.errors import InputValidationError
 from app.graph.state import GraphState
-from app.schemas import MapperSpec, StageName
+from app.schemas import StageName, TextArtifact
 
 
-class VisualMapperExecutor(StructuredAgentExecutor[MapperSpec]):
+class VisualMapperExecutor(TextArtifactExecutor):
     agent_name = "visual_mapper"
-    output_model = MapperSpec
+    artifact_slot = "mapper_artifact"
 
     def build_prompt_variables(self, state: GraphState) -> dict[str, Any]:
-        payload_logic = self.require_field(state, "payload_logic")
-        payload_style = self.require_field(state, "payload_style")
+        logic_artifact = artifact_content(state, "logic_artifact")
+        style_artifact = artifact_content(state, "style_artifact")
+        if not logic_artifact or not style_artifact:
+            raise InputValidationError("visual_mapper requires logic_artifact and style_artifact.")
         return {
-            "payload_logic": payload_logic.model_dump(mode="json"),
-            "payload_style": payload_style.model_dump(mode="json"),
-            "research_context": state["research_context"] or {},
+            "logic_artifact": logic_artifact,
+            "style_artifact": style_artifact,
             "user_feedback": state["user_feedback"] or "",
+            "parsed_discipline": state.get("parsed_discipline") or "",
         }
 
-    def build_state_updates(self, state: GraphState, artifact: MapperSpec) -> dict[str, Any]:
+    def build_state_updates(self, state: GraphState, artifact: TextArtifact) -> dict[str, Any]:
+        artifacts = dict(state["artifacts"])
+        artifacts[self.artifact_slot] = artifact
+        artifacts["final_review_artifact"] = None
+        artifacts["final_prompt_artifact"] = None
         return {
-            "payload_mapper": artifact,
+            "artifacts": artifacts,
             "stage": StageName.MAPPING_READY,
             "last_error": None,
         }

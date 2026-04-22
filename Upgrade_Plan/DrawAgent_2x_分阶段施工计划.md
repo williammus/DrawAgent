@@ -21,7 +21,8 @@
   - 一个 `tool_executor` 节点
 - `ask_clarification` 是 control tool，不是业务 graph node。
 - 只有 `orchestrator`、`logician`、`style_configurator` 直接输入 `source_text`。
-- `visual_mapper`、`critic`、`summary` 不得直接输入 `source_text`。
+- `visual_mapper`、`summary` 不得直接输入 `source_text`。
+- `critic` 的输入按审查对象动态变化，使用 `{type, pre_data, data}`，其中审查 `logician` 时 `pre_data` 可以是 `source_text`。
 - `critic` 必须保留两个审查关口：
   - `critic(post_plan)`
   - `critic(post_mapper)`
@@ -287,14 +288,16 @@
 - `backend/app/prompts/summary/v2.md`
 
 ### 3.3 调整原则
-- 不重写整份 Prompt。
+- 不重写整份 Prompt，但如果当前 `v2.md` 已偏离原始版本过多，则允许删除后基于原始基线重新写新的 `v2.md`。
 - 只修改与以下事项直接相关的必要段落：
   - 工具调用方式
   - 输入上下文边界
   - 输出形态从 JSON 转为自然语言
   - 双阶段 Critic 的阶段职责
   - `summary` 的上游依赖
-- 保留各 `v2.md` 中原有业务描述、风格要求、语气要求、产出目标的主体内容。
+- `orchestrator`、`logician`、`style_configurator`、`visual_mapper`、`summary` 的正式 `v2.md` 必须以各自 `v2-informal.md` 为基线做最小改动。
+- `critic` 的正式 `v2.md` 必须以 `backend/app/prompts/critic/v2-new.md` 为基线做最小改动。
+- 保留各基线 prompt 中原有业务描述、风格要求、语气要求、产出目标的主体内容。
 - 若某一处原文不影响新架构，就不改。
 
 ### 3.3 主要改动点
@@ -322,10 +325,13 @@
   - `post_plan`
   - `post_mapper`
 - 明确两个阶段的输入差异和判断目标。
+- 改为按审查对象输入：
+  - `type`
+  - `pre_data`
+  - `data`
 - 明确输出包括：
   - 自然语言审查意见
   - 最小控制字段
-- 不直接输入 `source_text`。
 
 #### 3.3.5 visual_mapper/summary/v2.md 微调
 任务：
@@ -377,6 +383,8 @@
 任务：
 - 统一改为自然语言 artifact 输出。
 - 去除对旧强结构化 artifact schema 的核心依赖。
+- 不强制各 artifact 采用统一正文格式。
+- 如需附加说明或控制信息，统一走旁路 metadata。
 
 #### 3.4.2 双阶段 Critic 执行链路
 任务：
@@ -384,11 +392,28 @@
   - `logician + style_configurator -> critic(post_plan)`
   - `visual_mapper -> critic(post_mapper)`
 - 两阶段计数分别累加、分别限流、分别放行。
+- `critic(post_plan)` 需要在同一 gate 内分别审查：
+  - `type=logician, pre_data=source_text, data=logic_artifact`
+  - `type=style_configurator, pre_data={parsed_discipline, parsed_target_venue, parsed_target_venue_type, parsed_special_requirements}, data=style_artifact`
+- `critic(post_mapper)` 需要审查：
+  - `type=visual_mapper, pre_data={logic_artifact, style_artifact}, data=mapper_artifact`
+- `post_plan_review_rounds_in_loop` 按 gate 计数，不按 gate 内部的两个 critic 子调用分别计数。
 
 #### 3.4.3 Warning 放行机制
 任务：
 - 达到澄清或审查上限后，写入 warning 并继续流程。
 - 对 `critic(post_plan)` 和 `critic(post_mapper)` 分别支持“超限放行”。
+
+#### 3.4.4 主控解析字段落地
+任务：
+- 在 `GraphState` 中新增并维护：
+  - `parsed_discipline`
+  - `parsed_target_venue`
+  - `parsed_target_venue_type`
+  - `parsed_special_requirements`
+- 解析并填充这些字段的工作由主控 agent 完成。
+- 若 `parsed_discipline`、`parsed_target_venue`、`parsed_target_venue_type` 任一为空或 `unknown`，主控必须优先调用澄清工具。
+- `parsed_special_requirements` 允许后续反馈追加；当用户明确表达替换语义时，以最新反馈覆盖。
 
 ### 3.4 交付物
 - 文本 artifact 主链路
