@@ -130,12 +130,16 @@ export function useSSEStream(options: UseSSEStreamOptions = {}) {
               break;
             case "clarification_required":
               clearThinkingMessages();
-              setClarification(event.clarification_question);
+              setClarification(event.question);
               addMessage({
                 id: crypto.randomUUID(),
                 kind: "clarification",
                 timestamp: event.timestamp,
-                text: event.clarification_question,
+                text: event.question,
+                meta: {
+                  reason: event.reason,
+                  missing_fields: event.missing_fields,
+                },
               });
               break;
             case "review_failed":
@@ -145,8 +149,21 @@ export function useSSEStream(options: UseSSEStreamOptions = {}) {
                 timestamp: event.timestamp,
                 text: event.reason,
                 meta: {
+                  review_phase: event.review_phase,
                   error_stage: event.error_stage,
                   fix_suggestion: event.fix_suggestion,
+                },
+              });
+              break;
+            case "workflow_warning":
+              addMessage({
+                id: crypto.randomUUID(),
+                kind: "assistant",
+                timestamp: event.timestamp,
+                text: event.message,
+                meta: {
+                  warning_type: event.warning_type,
+                  review_phase: event.review_phase,
                 },
               });
               break;

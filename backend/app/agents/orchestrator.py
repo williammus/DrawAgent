@@ -2,15 +2,17 @@ from __future__ import annotations
 
 from typing import Any
 
-from app.agents.base import StructuredAgentExecutor
+from app.agents.base import ControllerExecutor
 from app.agents.helpers import payload_status_summary
 from app.graph.state import GraphState
-from app.schemas import OrchestratorDecisionSpec, StageName
 
 
-class OrchestratorExecutor(StructuredAgentExecutor[OrchestratorDecisionSpec]):
+class ControllerAgentExecutor(ControllerExecutor):
     agent_name = "orchestrator"
-    output_model = OrchestratorDecisionSpec
+
+    def __init__(self, *, tool_registry: Any, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self.tool_registry = tool_registry
 
     def build_prompt_variables(self, state: GraphState) -> dict[str, Any]:
         return {
@@ -20,18 +22,19 @@ class OrchestratorExecutor(StructuredAgentExecutor[OrchestratorDecisionSpec]):
             "research_context": state["research_context"] or {},
             "payload_status_summary": payload_status_summary(state),
             "last_error": state["last_error"] or "",
+            "last_tool_results": [result.model_dump(mode="json") for result in state["last_tool_results"]],
+            "bypass_warnings": [warning.model_dump(mode="json") for warning in state["bypass_warnings"]],
+            "loop_id": state["loop_id"],
+            "clarification_rounds_in_loop": state["clarification_rounds_in_loop"],
+            "post_plan_review_rounds_in_loop": state["post_plan_review_rounds_in_loop"],
+            "post_mapper_review_rounds_in_loop": state["post_mapper_review_rounds_in_loop"],
         }
 
-    def build_state_updates(
-        self,
-        state: GraphState,
-        artifact: OrchestratorDecisionSpec,
-    ) -> dict[str, Any]:
-        next_stage = StageName.CLARIFYING if artifact.requires_clarification else StageName.PLANNING
-        return {
-            "orchestrator_decision": artifact,
-            "intent": artifact.intent,
-            "needs_clarification": artifact.requires_clarification,
-            "stage": next_stage,
-            "last_error": None,
-        }
+    def build_tool_schemas(self) -> list[dict[str, Any]]:
+        return self.tool_registry.to_openai_schemas()
+
+    def build_system_prompt(self) -> str:
+        return (
+            "You are the DrawAgent controller. Use the provided tools to orchestrate work. "
+            "When a tool is required, return tool calls instead of JSON plans in assistant text."
+        )

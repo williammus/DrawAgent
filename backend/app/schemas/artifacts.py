@@ -5,7 +5,13 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.schemas.common import IntentType, ReviewErrorStage, StageName
+from app.schemas.common import (
+    IntentType,
+    ReviewErrorStage,
+    ReviewPhase,
+    StageName,
+    WorkflowWarningType,
+)
 
 
 def utc_now() -> datetime:
@@ -85,6 +91,27 @@ class FinalPromptSpec(StrictModel):
     ready_for_generation: bool
 
 
+class TextArtifact(StrictModel):
+    tool_name: str
+    content: str
+    prompt_version: str
+    updated_at: datetime = Field(default_factory=utc_now)
+
+
+class ClarificationAction(StrictModel):
+    question: str
+    reason: str
+    missing_fields: list[str] = Field(default_factory=list)
+
+
+class WorkflowWarning(StrictModel):
+    warning_type: WorkflowWarningType
+    message: str
+    loop_id: str
+    review_phase: ReviewPhase | None = None
+    created_at: datetime = Field(default_factory=utc_now)
+
+
 class StoredFileMeta(StrictModel):
     file_id: str
     original_name: str
@@ -108,12 +135,17 @@ class SessionStateSummary(StrictModel):
     session_id: str
     stage: StageName
     intent: IntentType
-    has_payload_logic: bool
-    has_payload_style: bool
-    has_payload_mapper: bool
-    has_payload_review: bool
-    has_payload_final: bool
+    has_source_text: bool
+    source_text_locked: bool
+    has_logic_artifact: bool
+    has_style_artifact: bool
+    has_plan_review_artifact: bool
+    has_mapper_artifact: bool
+    has_final_review_artifact: bool
+    has_final_prompt_artifact: bool
+    has_bypass_warning: bool
     needs_clarification: bool
+    interrupted: bool
     user_confirmed: bool
     error_count: int = Field(ge=0)
     updated_at: datetime

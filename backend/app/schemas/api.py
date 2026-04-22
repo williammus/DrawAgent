@@ -2,18 +2,14 @@ from __future__ import annotations
 
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.schemas.artifacts import (
     CleanupReport,
-    FinalPromptSpec,
     GeneratedImageMeta,
-    LogicSpec,
-    MapperSpec,
-    ReviewSpec,
     SessionStateSummary,
     StoredFileMeta,
-    StyleSpec,
+    TextArtifact,
 )
 from app.schemas.common import ErrorCode, GenerateStatus, StageName
 
@@ -44,18 +40,30 @@ class SessionDeleteResponse(StrictModel):
     cleanup: CleanupReport | None = None
 
 
-class ChatMessageRequest(StrictModel):
+class ChatRunRequest(StrictModel):
     session_id: str
-    message: str = Field(min_length=1)
-    attachments: list[str] = Field(default_factory=list)
+    source_text: str | None = Field(default=None, min_length=1)
+    user_feedback: str | None = Field(default=None, min_length=1)
+
+    @model_validator(mode="after")
+    def validate_run_inputs(self) -> "ChatRunRequest":
+        if bool(self.source_text) == bool(self.user_feedback):
+            raise ValueError("Exactly one of source_text or user_feedback must be provided.")
+        return self
 
 
-class ChatMessageResponse(StrictModel):
+class ChatResumeRequest(StrictModel):
+    session_id: str
+    user_feedback: str = Field(min_length=1)
+
+
+class ChatWorkflowResponse(StrictModel):
     session_id: str
     stage: StageName
     summary: SessionStateSummary
     accepted: bool = True
     stream_url: str
+    operation: str
     response_message: str | None = None
 
 
@@ -72,11 +80,12 @@ class UploadDeleteResponse(StrictModel):
 
 class ArtifactResponse(StrictModel):
     session_id: str
-    payload_logic: LogicSpec | None = None
-    payload_style: StyleSpec | None = None
-    payload_mapper: MapperSpec | None = None
-    payload_review: ReviewSpec | None = None
-    payload_final: FinalPromptSpec | None = None
+    logic_artifact: TextArtifact | None = None
+    style_artifact: TextArtifact | None = None
+    plan_review_artifact: TextArtifact | None = None
+    mapper_artifact: TextArtifact | None = None
+    final_review_artifact: TextArtifact | None = None
+    final_prompt_artifact: TextArtifact | None = None
 
 
 class GenerateResponse(StrictModel):

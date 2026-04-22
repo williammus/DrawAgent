@@ -1,6 +1,6 @@
 import { useCallback, useState } from "react";
 
-import { sendChatMessage } from "../api/chat";
+import { resumeWorkflow, runWorkflow } from "../api/chat";
 import { deleteSession, initSession } from "../api/session";
 import { uploadFiles, deleteUploadedFile } from "../api/upload";
 import { generateImage } from "../api/generate";
@@ -15,7 +15,6 @@ export function useChatWorkflow() {
   const sessionId = useAppStore((state) => state.sessionId);
   const summary = useAppStore((state) => state.summary);
   const uploadedFiles = useAppStore((state) => state.uploadedFiles);
-  const selectedAttachmentIds = useAppStore((state) => state.selectedAttachmentIds);
   const addMessage = useAppStore((state) => state.addMessage);
   const replaceThinkingMessage = useAppStore((state) => state.replaceThinkingMessage);
   const setSummary = useAppStore((state) => state.setSummary);
@@ -69,11 +68,23 @@ export function useChatWorkflow() {
       setWorkspaceStatus("workflow_running");
 
       try {
-        const response = await sendChatMessage({
-          session_id: sessionId,
-          message: message.trim(),
-          attachments: selectedAttachmentIds,
-        });
+        const response =
+          summary?.interrupted || summary?.needs_clarification
+            ? await resumeWorkflow({
+                session_id: sessionId,
+                user_feedback: message.trim(),
+              })
+            : await runWorkflow(
+                summary?.has_source_text || hasAnyArtifacts(summary)
+                  ? {
+                      session_id: sessionId,
+                      user_feedback: message.trim(),
+                    }
+                  : {
+                      session_id: sessionId,
+                      source_text: message.trim(),
+                    }
+              );
         setSummary(response.summary);
         setClarification(null);
       } catch (error) {
@@ -87,8 +98,8 @@ export function useChatWorkflow() {
       addMessage,
       pushApiError,
       replaceThinkingMessage,
-      selectedAttachmentIds,
       sessionId,
+      summary,
       setClarification,
       setSummary,
       setWorkspaceStatus,
@@ -254,4 +265,18 @@ export function useChatWorkflow() {
 
 function derivePostUploadStatus(stage: string) {
   return stage === "failed" ? "failed" : "idle";
+}
+
+function hasAnyArtifacts(summary: ReturnType<typeof useAppStore.getState>["summary"]) {
+  if (!summary) {
+    return false;
+  }
+  return (
+    summary.has_logic_artifact ||
+    summary.has_style_artifact ||
+    summary.has_plan_review_artifact ||
+    summary.has_mapper_artifact ||
+    summary.has_final_review_artifact ||
+    summary.has_final_prompt_artifact
+  );
 }

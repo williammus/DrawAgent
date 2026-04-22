@@ -9,6 +9,7 @@ from app.core.errors import ArtifactValidationError, InputValidationError
 from app.graph.state import GraphState
 from app.llm import LLMClient
 from app.prompts import PromptRegistry, PromptRenderer
+from app.schemas.agents import ControllerResponse
 
 
 ModelT = TypeVar("ModelT", bound=BaseModel)
@@ -78,3 +79,42 @@ class StructuredAgentExecutor(ABC, Generic[ModelT]):
                 details={"agent_name": self.agent_name, "field_name": field_name},
             )
         return value
+
+
+class ControllerExecutor(ABC):
+    agent_name: str
+
+    def __init__(
+        self,
+        *,
+        llm_client: LLMClient,
+        prompt_registry: PromptRegistry | None = None,
+        prompt_renderer: PromptRenderer | None = None,
+        prompt_version: str | None = None,
+    ) -> None:
+        self.llm_client = llm_client
+        self.prompt_registry = prompt_registry or PromptRegistry()
+        self.prompt_renderer = prompt_renderer or PromptRenderer()
+        self.prompt_version = prompt_version
+
+    def run(self, state: GraphState) -> ControllerResponse:
+        variables = self.build_prompt_variables(state)
+        template = self.prompt_registry.load_text(self.agent_name, self.prompt_version)
+        prompt_text = self.prompt_renderer.render(template, variables)
+        payload = self.llm_client.generate_with_tools(
+            prompt_text,
+            tools=self.build_tool_schemas(),
+            system_prompt=self.build_system_prompt(),
+        )
+        return ControllerResponse.model_validate(payload)
+
+    @abstractmethod
+    def build_prompt_variables(self, state: GraphState) -> dict[str, Any]:
+        raise NotImplementedError
+
+    @abstractmethod
+    def build_tool_schemas(self) -> list[dict[str, Any]]:
+        raise NotImplementedError
+
+    def build_system_prompt(self) -> str | None:
+        return None

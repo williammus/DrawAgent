@@ -28,6 +28,7 @@ class SummaryExecutor(StructuredAgentExecutor[FinalPromptSpec]):
             "payload_style": payload_style.model_dump(mode="json"),
             "payload_mapper": payload_mapper.model_dump(mode="json"),
             "payload_review": payload_review.model_dump(mode="json"),
+            "bypass_warnings": [warning.model_dump(mode="json") for warning in state["bypass_warnings"]],
         }
 
     def build_state_updates(self, state: GraphState, artifact: FinalPromptSpec) -> dict[str, Any]:

@@ -5,8 +5,11 @@ import type {
   EventType,
   GenerateStatus,
   GeneratedImageMeta,
+  ReviewPhase,
   SessionSummary,
   StoredFileMeta,
+  WorkflowOperation,
+  WorkflowWarningType,
 } from "./domain";
 
 export interface ApiErrorDetail {
@@ -31,18 +34,24 @@ export interface SessionDeleteResponse {
   cleanup: CleanupReport | null;
 }
 
-export interface ChatMessageRequest {
+export interface ChatRunRequest {
   session_id: string;
-  message: string;
-  attachments?: string[];
+  source_text?: string;
+  user_feedback?: string;
 }
 
-export interface ChatMessageResponse {
+export interface ChatResumeRequest {
+  session_id: string;
+  user_feedback: string;
+}
+
+export interface ChatWorkflowResponse {
   session_id: string;
   stage: SessionSummary["stage"];
   summary: SessionSummary;
   accepted: boolean;
   stream_url: string;
+  operation: WorkflowOperation;
   response_message: string | null;
 }
 
@@ -93,13 +102,16 @@ export interface StageCompletedEvent extends BaseSseEvent {
 
 export interface ClarificationRequiredEvent extends BaseSseEvent {
   event_type: "clarification_required";
-  clarification_question: string;
+  question: string;
+  reason: string;
+  missing_fields: string[];
 }
 
 export interface ReviewFailedEvent extends BaseSseEvent {
   event_type: "review_failed";
+  review_phase: ReviewPhase;
   reason: string;
-  error_stage: NonNullable<ArtifactsBundle["payload_review"]>["error_stage"];
+  error_stage: string | null;
   fix_suggestion: string[];
 }
 
@@ -112,6 +124,13 @@ export interface PromptReadyEvent extends BaseSseEvent {
 export interface ImageGeneratedEvent extends BaseSseEvent {
   event_type: "image_generated";
   image_path: string;
+}
+
+export interface WorkflowWarningEvent extends BaseSseEvent {
+  event_type: "workflow_warning";
+  warning_type: WorkflowWarningType;
+  loop_id: string;
+  review_phase: ReviewPhase | null;
 }
 
 export interface WorkflowErrorEvent extends BaseSseEvent {
@@ -127,4 +146,5 @@ export type SseEventData =
   | ReviewFailedEvent
   | PromptReadyEvent
   | ImageGeneratedEvent
+  | WorkflowWarningEvent
   | WorkflowErrorEvent;

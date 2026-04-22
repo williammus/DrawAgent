@@ -1,26 +1,36 @@
 from app.agents import (
+    ControllerAgentExecutor,
     CriticExecutor,
     LogicianExecutor,
-    OrchestratorExecutor,
     StyleConfiguratorExecutor,
     SummaryExecutor,
+    ToolDefinition,
+    ToolRegistry,
     VisualMapperExecutor,
 )
 from app.graph.state import build_initial_graph_state
 from app.knowledge import StyleKnowledgeProvider
 from app.prompts import PromptRegistry, PromptRenderer
-from app.schemas import FinalPromptSpec, LogicSpec, MapperSpec, ReviewSpec, StyleSpec
-from app.schemas.common import ReviewErrorStage, StageName
+from app.schemas import EmptyToolInput, FinalPromptSpec, LogicSpec, MapperSpec, ReviewSpec, StyleSpec
+from app.schemas.common import ReviewErrorStage, ReviewPhase, StageName
 
 
 class FakeLLMClient:
-    def __init__(self, responses):
-        self.responses = list(responses)
+    def __init__(self, *, json_responses=None, tool_responses=None):
+        self.json_responses = list(json_responses or [])
+        self.tool_responses = list(tool_responses or [])
         self.prompts: list[str] = []
 
     def generate_json(self, prompt: str, **kwargs):
         self.prompts.append(prompt)
-        response = self.responses.pop(0)
+        response = self.json_responses.pop(0)
+        if isinstance(response, Exception):
+            raise response
+        return response
+
+    def generate_with_tools(self, prompt: str, **kwargs):
+        self.prompts.append(prompt)
+        response = self.tool_responses.pop(0)
         if isinstance(response, Exception):
             raise response
         return response
@@ -90,38 +100,56 @@ def build_review_payload(passed: bool = True) -> ReviewSpec:
     )
 
 
-def test_orchestrator_executor_returns_structured_decision() -> None:
+def test_controller_executor_returns_native_tool_calls() -> None:
     state = build_state_with_inputs()
     fake_llm = FakeLLMClient(
-        [
+        tool_responses=[
             {
-                "intent": "new_task",
-                "requires_clarification": False,
-                "clarification_question": None,
-                "selected_nodes": [
-                    "logician",
-                    "style_configurator",
-                    "visual_mapper",
-                    "critic",
-                    "summary",
+                "assistant_text": "",
+                "tool_calls": [
+                    {"tool_name": "logician_tool", "arguments": {}, "tool_call_id": "call_1"},
+                    {"tool_name": "style_configurator_tool", "arguments": {}, "tool_call_id": "call_2"},
                 ],
-                "reason": "The user provided a new drawing request.",
-                "user_message": "开始处理。",
+                "finish_reason": "tool_calls",
             }
         ]
     )
-    executor = OrchestratorExecutor(**build_common_kwargs(fake_llm))
+    tool_registry = ToolRegistry(
+        [
+            ToolDefinition(
+                tool_name="logician_tool",
+                description="Generate logic.",
+                input_model=EmptyToolInput,
+                tool_kind="business",
+                executor_builder=lambda: None,
+            ),
+            ToolDefinition(
+                tool_name="style_configurator_tool",
+                description="Generate style.",
+                input_model=EmptyToolInput,
+                tool_kind="business",
+                executor_builder=lambda: None,
+            ),
+        ]
+    )
+    executor = ControllerAgentExecutor(
+        tool_registry=tool_registry,
+        llm_client=fake_llm,
+        prompt_registry=PromptRegistry(),
+        prompt_renderer=PromptRenderer(),
+        prompt_version="v2",
+    )
 
     updates = executor.run(state)
 
-    assert updates["stage"] == StageName.PLANNING
-    assert updates["orchestrator_decision"].selected_nodes[0] == "logician"
+    assert len(updates.tool_calls) == 2
+    assert updates.tool_calls[0].tool_name == "logician_tool"
 
 
 def test_logician_executor_returns_logic_payload() -> None:
     state = build_state_with_inputs()
     fake_llm = FakeLLMClient(
-        [
+        json_responses=[
             {
                 "chart_title": "Pipeline",
                 "core_method_summary": "Encoder to decoder.",
@@ -142,7 +170,7 @@ def test_logician_executor_returns_logic_payload() -> None:
 def test_style_configurator_executor_uses_knowledge_pack() -> None:
     state = build_state_with_inputs()
     fake_llm = FakeLLMClient(
-        [
+        json_responses=[
             {
                 "discipline": "computer vision",
                 "target_journal": "CVPR",
@@ -174,7 +202,7 @@ def test_visual_mapper_executor_returns_mapper_payload() -> None:
     state["payload_logic"] = build_logic_payload()
     state["payload_style"] = build_style_payload()
     fake_llm = FakeLLMClient(
-        [
+        json_responses=[
             {
                 "narrative_direction": "left-to-right",
                 "section_layout": ["input", "output"],
@@ -195,18 +223,18 @@ def test_visual_mapper_executor_returns_mapper_payload() -> None:
     assert updates["payload_mapper"].module_positions["Encoder"] == "left"
 
 
-def test_critic_executor_returns_failed_review_payload() -> None:
+def test_critic_executor_supports_post_plan_without_mapper() -> None:
     state = build_state_with_inputs()
     state["payload_logic"] = build_logic_payload()
     state["payload_style"] = build_style_payload()
-    state["payload_mapper"] = build_mapper_payload()
+    state["current_review_phase"] = ReviewPhase.POST_PLAN
     fake_llm = FakeLLMClient(
-        [
+        json_responses=[
             {
                 "passed": False,
-                "error_stage": "visual_mapper",
-                "reason": "Modules overlap visually.",
-                "fix_suggestion": ["Increase spacing."],
+                "error_stage": "style_configurator",
+                "reason": "Style needs adjustment.",
+                "fix_suggestion": ["Increase contrast."],
             }
         ]
     )
@@ -215,7 +243,7 @@ def test_critic_executor_returns_failed_review_payload() -> None:
     updates = executor.run(state)
 
     assert updates["payload_review"].passed is False
-    assert updates["payload_review"].error_stage == ReviewErrorStage.VISUAL_MAPPER
+    assert updates["payload_review"].error_stage == ReviewErrorStage.STYLE_CONFIGURATOR
 
 
 def test_summary_executor_returns_final_prompt_payload() -> None:
@@ -225,7 +253,7 @@ def test_summary_executor_returns_final_prompt_payload() -> None:
     state["payload_mapper"] = build_mapper_payload()
     state["payload_review"] = build_review_payload()
     fake_llm = FakeLLMClient(
-        [
+        json_responses=[
             {
                 "final_prompt_en": "A professional, scientific diagram in the style of a top-tier conference.",
                 "final_prompt_cn": "顶会风格科研示意图。",

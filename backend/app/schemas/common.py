@@ -54,7 +54,18 @@ class EventType(StrEnum):
     REVIEW_FAILED = "review_failed"
     PROMPT_READY = "prompt_ready"
     IMAGE_GENERATED = "image_generated"
+    WORKFLOW_WARNING = "workflow_warning"
     ERROR = "error"
+
+
+class ReviewPhase(StrEnum):
+    POST_PLAN = "post_plan"
+    POST_MAPPER = "post_mapper"
+
+
+class WorkflowWarningType(StrEnum):
+    CLARIFICATION_LIMIT_REACHED = "clarification_limit_reached"
+    REVIEW_LIMIT_REACHED = "review_limit_reached"
 
 
 class GenerateStatus(StrEnum):

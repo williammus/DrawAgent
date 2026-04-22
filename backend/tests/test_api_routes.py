@@ -17,23 +17,40 @@ class StubChatService:
     def __init__(self) -> None:
         self.calls: list[dict[str, object]] = []
 
-    def submit_message(
+    def run_workflow(
         self,
         *,
         session_id: str,
         request_id: str,
-        message: str,
-        attachment_ids: list[str],
+        source_text: str | None = None,
+        user_feedback: str | None = None,
     ) -> str:
         self.calls.append(
             {
                 "session_id": session_id,
                 "request_id": request_id,
-                "message": message,
-                "attachment_ids": attachment_ids,
+                "source_text": source_text,
+                "user_feedback": user_feedback,
             }
         )
-        return "run_workflow"
+        return "run_source_text"
+
+    def resume_workflow(
+        self,
+        *,
+        session_id: str,
+        request_id: str,
+        user_feedback: str,
+    ) -> str:
+        self.calls.append(
+            {
+                "session_id": session_id,
+                "request_id": request_id,
+                "user_feedback": user_feedback,
+                "resume": True,
+            }
+        )
+        return "resume_user_feedback"
 
 
 def wait_until(predicate, timeout_seconds: float = 2.0) -> bool:
@@ -71,18 +88,18 @@ def test_phase5_api_flow() -> None:
         stub_chat_service = StubChatService()
         client.app.state.chat_service = stub_chat_service
         message_response = client.post(
-            "/api/chat/message",
+            "/api/chat/run",
             json={
                 "session_id": session_id,
-                "message": "Please create a figure.",
-                "attachments": [file_id],
+                "source_text": "Please create a figure.",
             },
         )
         assert message_response.status_code == 202
         message_payload = message_response.json()
         assert message_payload["accepted"] is True
         assert message_payload["stream_url"] == f"/api/chat/stream/{session_id}"
-        assert stub_chat_service.calls[0]["attachment_ids"] == [file_id]
+        assert message_payload["operation"] == "run_source_text"
+        assert stub_chat_service.calls[0]["source_text"] == "Please create a figure."
 
         client.app.state.workflow_event_store.append(
             session_id,
@@ -106,7 +123,7 @@ def test_phase5_api_flow() -> None:
 
         artifacts_response = client.get(f"/api/artifacts/{session_id}")
         assert artifacts_response.status_code == 200
-        assert artifacts_response.json()["payload_final"] is None
+        assert artifacts_response.json()["final_prompt_artifact"] is None
 
         record = client.app.state.session_store.get_session(session_id)
         new_state = deepcopy(record.state)
@@ -118,6 +135,10 @@ def test_phase5_api_flow() -> None:
             ready_for_generation=True,
         )
         client.app.state.session_store.update_state(session_id, new_state)
+
+        artifacts_response = client.get(f"/api/artifacts/{session_id}")
+        assert artifacts_response.status_code == 200
+        assert "A clean scientific pipeline figure." in artifacts_response.json()["final_prompt_artifact"]["content"]
 
         generate_response = client.post(f"/api/generate/{session_id}")
         assert generate_response.status_code == 202
@@ -180,3 +201,25 @@ def test_stream_supports_after_id_replay() -> None:
         assert streamed_payloads[0]["event_id"] == 2
         assert streamed_payloads[0]["event_type"] == "stage_completed"
         assert streamed_payloads[0]["data"]["message"] == "Logician completed."
+
+
+def test_resume_route_uses_explicit_resume_contract() -> None:
+    with TestClient(app) as client:
+        session_response = client.post("/api/session/init")
+        session_id = session_response.json()["session_id"]
+
+        stub_chat_service = StubChatService()
+        client.app.state.chat_service = stub_chat_service
+        response = client.post(
+            "/api/chat/resume",
+            json={
+                "session_id": session_id,
+                "user_feedback": "补充摘要内容",
+            },
+        )
+
+        assert response.status_code == 202
+        payload = response.json()
+        assert payload["operation"] == "resume_user_feedback"
+        assert stub_chat_service.calls[0]["resume"] is True
+        assert stub_chat_service.calls[0]["user_feedback"] == "补充摘要内容"

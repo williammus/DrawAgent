@@ -5,7 +5,14 @@ from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.schemas.common import ErrorCode, EventType, ReviewErrorStage, StageName
+from app.schemas.common import (
+    ErrorCode,
+    EventType,
+    ReviewErrorStage,
+    ReviewPhase,
+    StageName,
+    WorkflowWarningType,
+)
 
 
 def utc_now() -> datetime:
@@ -35,11 +42,14 @@ class StageCompletedEvent(BaseEvent):
 
 class ClarificationRequiredEvent(BaseEvent):
     event_type: Literal[EventType.CLARIFICATION_REQUIRED] = EventType.CLARIFICATION_REQUIRED
-    clarification_question: str
+    question: str
+    reason: str
+    missing_fields: list[str] = Field(default_factory=list)
 
 
 class ReviewFailedEvent(BaseEvent):
     event_type: Literal[EventType.REVIEW_FAILED] = EventType.REVIEW_FAILED
+    review_phase: ReviewPhase
     reason: str
     error_stage: ReviewErrorStage
     fix_suggestion: list[str] = Field(default_factory=list)
@@ -56,6 +66,13 @@ class ImageGeneratedEvent(BaseEvent):
     image_path: str
 
 
+class WorkflowWarningEvent(BaseEvent):
+    event_type: Literal[EventType.WORKFLOW_WARNING] = EventType.WORKFLOW_WARNING
+    warning_type: WorkflowWarningType
+    loop_id: str
+    review_phase: ReviewPhase | None = None
+
+
 class ErrorEvent(BaseEvent):
     event_type: Literal[EventType.ERROR] = EventType.ERROR
     error_code: ErrorCode
@@ -69,6 +86,7 @@ AgentEvent = Annotated[
     | ReviewFailedEvent
     | PromptReadyEvent
     | ImageGeneratedEvent
+    | WorkflowWarningEvent
     | ErrorEvent,
     Field(discriminator="event_type"),
 ]

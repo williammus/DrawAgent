@@ -9,7 +9,7 @@ from fastapi import UploadFile
 
 from app.core.errors import ImageNotReadyError, InputValidationError, SessionFileNotFoundError
 from app.graph.state import GraphState
-from app.schemas import ArtifactResponse, SessionStateSummary, StoredFileMeta
+from app.schemas import ArtifactResponse, SessionStateSummary, StoredFileMeta, TextArtifact
 from app.storage import SessionStore, TempFileManager
 
 
@@ -47,13 +47,51 @@ class SessionService:
 
     def get_artifacts(self, session_id: str) -> ArtifactResponse:
         state = self.session_store.get_state(session_id)
+        artifacts = state.get("artifacts") or {}
         return ArtifactResponse(
             session_id=session_id,
-            payload_logic=state["payload_logic"],
-            payload_style=state["payload_style"],
-            payload_mapper=state["payload_mapper"],
-            payload_review=state["payload_review"],
-            payload_final=state["payload_final"],
+            logic_artifact=self._resolve_artifact_slot(
+                artifacts,
+                "logic_artifact",
+                legacy_payload=state.get("payload_logic"),
+                tool_name="logician",
+                prompt_version="legacy-json",
+            ),
+            style_artifact=self._resolve_artifact_slot(
+                artifacts,
+                "style_artifact",
+                legacy_payload=state.get("payload_style"),
+                tool_name="style_configurator",
+                prompt_version="legacy-json",
+            ),
+            plan_review_artifact=self._resolve_artifact_slot(
+                artifacts,
+                "plan_review_artifact",
+                legacy_payload=None,
+                tool_name="critic",
+                prompt_version="legacy-json",
+            ),
+            mapper_artifact=self._resolve_artifact_slot(
+                artifacts,
+                "mapper_artifact",
+                legacy_payload=state.get("payload_mapper"),
+                tool_name="visual_mapper",
+                prompt_version="legacy-json",
+            ),
+            final_review_artifact=self._resolve_artifact_slot(
+                artifacts,
+                "final_review_artifact",
+                legacy_payload=state.get("payload_review"),
+                tool_name="critic",
+                prompt_version="legacy-json",
+            ),
+            final_prompt_artifact=self._resolve_artifact_slot(
+                artifacts,
+                "final_prompt_artifact",
+                legacy_payload=state.get("payload_final"),
+                tool_name="summary",
+                prompt_version="legacy-json",
+            ),
         )
 
     async def store_uploads(self, session_id: str, files: list[UploadFile]) -> list[StoredFileMeta]:
@@ -182,3 +220,28 @@ class SessionService:
 
     def _copy_state(self, state: GraphState) -> GraphState:
         return deepcopy(state)
+
+    def _resolve_artifact_slot(
+        self,
+        artifacts: dict[str, TextArtifact | None],
+        slot_name: str,
+        *,
+        legacy_payload: object | None,
+        tool_name: str,
+        prompt_version: str,
+    ) -> TextArtifact | None:
+        artifact = artifacts.get(slot_name)
+        if artifact is not None:
+            return artifact
+        if legacy_payload is None:
+            return None
+
+        if hasattr(legacy_payload, "model_dump_json"):
+            content = legacy_payload.model_dump_json(indent=2)  # type: ignore[union-attr]
+        else:
+            content = str(legacy_payload)
+        return TextArtifact(
+            tool_name=tool_name,
+            content=content,
+            prompt_version=prompt_version,
+        )

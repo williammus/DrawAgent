@@ -23,7 +23,7 @@ export function useArtifacts() {
       if (error instanceof ApiError) {
         setLastError(error.detail);
         setNotice({
-          title: "获取结构化产物失败",
+          title: "获取文本产物失败",
           description: error.detail?.message ?? error.message,
           tone: "error",
         });

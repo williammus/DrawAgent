@@ -90,7 +90,7 @@ function App() {
     setSelectedAttachmentIds(next);
   };
 
-  const finalPrompt = artifacts?.payload_final;
+  const finalPrompt = artifacts?.final_prompt_artifact;
 
   return (
     <AppShell
@@ -130,8 +130,7 @@ function App() {
 
               {workspaceStatus === "idle" && messages.length <= 1 ? (
                 <EmptyState>
-                  上传论文摘要、方法说明或参考图，然后直接描述你要生成的科研图。系统会在需要时主动追问，并在
-                  Prompt 准备好后让你确认是否出图。
+                  先输入完整绘图内容或直接描述你的科研图需求。系统会在需要时主动追问，并在 Prompt 准备好后让你确认是否出图。
                 </EmptyState>
               ) : null}
 

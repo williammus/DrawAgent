@@ -14,11 +14,14 @@ class CriticExecutor(StructuredAgentExecutor[ReviewSpec]):
     def build_prompt_variables(self, state: GraphState) -> dict[str, Any]:
         payload_logic = self.require_field(state, "payload_logic")
         payload_style = self.require_field(state, "payload_style")
-        payload_mapper = self.require_field(state, "payload_mapper")
+        payload_mapper = state.get("payload_mapper")
         return {
+            "review_phase": state.get("current_review_phase"),
             "payload_logic": payload_logic.model_dump(mode="json"),
             "payload_style": payload_style.model_dump(mode="json"),
-            "payload_mapper": payload_mapper.model_dump(mode="json"),
+            "payload_mapper": (
+                payload_mapper.model_dump(mode="json") if payload_mapper is not None else {}
+            ),
         }
 
     def build_state_updates(self, state: GraphState, artifact: ReviewSpec) -> dict[str, Any]:

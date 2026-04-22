@@ -68,12 +68,17 @@ const initSummary: SessionSummary = {
   session_id: "session-1",
   stage: "idle",
   intent: "unknown",
-  has_payload_logic: false,
-  has_payload_style: false,
-  has_payload_mapper: false,
-  has_payload_review: false,
-  has_payload_final: false,
+  has_source_text: false,
+  source_text_locked: false,
+  has_logic_artifact: false,
+  has_style_artifact: false,
+  has_plan_review_artifact: false,
+  has_mapper_artifact: false,
+  has_final_review_artifact: false,
+  has_final_prompt_artifact: false,
+  has_bypass_warning: false,
   needs_clarification: false,
+  interrupted: false,
   user_confirmed: false,
   error_count: 0,
   updated_at: "2026-04-17T08:00:00Z",
@@ -102,7 +107,7 @@ describe("frontend workflow contracts", () => {
       if (url.endsWith("/api/session/init")) {
         return jsonResponse(initResponse, 201);
       }
-      if (url.endsWith("/api/chat/message")) {
+      if (url.endsWith("/api/chat/run")) {
         return jsonResponse(
           {
             session_id: "session-1",
@@ -110,7 +115,26 @@ describe("frontend workflow contracts", () => {
             summary: initResponse.summary,
             accepted: true,
             stream_url: "/api/chat/stream/session-1",
+            operation: "run_source_text",
             response_message: "Workflow request accepted.",
+          },
+          202
+        );
+      }
+      if (url.endsWith("/api/chat/resume")) {
+        return jsonResponse(
+          {
+            session_id: "session-1",
+            stage: "clarifying",
+            summary: {
+              ...initResponse.summary,
+              interrupted: true,
+              needs_clarification: true,
+            },
+            accepted: true,
+            stream_url: "/api/chat/stream/session-1",
+            operation: "resume_user_feedback",
+            response_message: "Clarification response accepted.",
           },
           202
         );
@@ -203,7 +227,9 @@ describe("frontend workflow contracts", () => {
         timestamp: "2026-04-17T08:10:00Z",
         request_id: "req-clarify",
         message: "Clarification required.",
-        clarification_question: "请补充论文摘要和目标期刊。",
+        question: "请补充论文摘要和目标期刊。",
+        reason: "missing_source_text",
+        missing_fields: ["source_text"],
       });
     });
 
@@ -221,6 +247,7 @@ describe("frontend workflow contracts", () => {
         timestamp: "2026-04-17T08:11:00Z",
         request_id: "req-review",
         message: "Critic requested a rollback.",
+        review_phase: "post_mapper",
         reason: "布局层次不清晰。",
         error_stage: "visual_mapper",
         fix_suggestion: ["减少交叉箭头", "强化主路径"],
@@ -372,7 +399,9 @@ describe("frontend workflow contracts", () => {
     useAppStore.getState().setSession(initResponse.session_id, initResponse.summary);
     useAppStore.getState().setSummary({
       ...initResponse.summary,
-      has_payload_final: true,
+      has_source_text: true,
+      source_text_locked: true,
+      has_final_prompt_artifact: true,
       stage: "prompt_ready",
     });
 
@@ -382,7 +411,7 @@ describe("frontend workflow contracts", () => {
       await result.current.submitMessage("请生成一张科研流程图。");
     });
     expect(fetchMock).toHaveBeenCalledWith(
-      expect.stringContaining("/api/chat/message"),
+      expect.stringContaining("/api/chat/run"),
       expect.objectContaining({ method: "POST" })
     );
 

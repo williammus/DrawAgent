@@ -23,16 +23,34 @@ class SessionRecord:
     expires_at: datetime
 
     def to_summary(self) -> SessionStateSummary:
+        artifacts = self.state.get("artifacts") or {}
         return SessionStateSummary(
             session_id=self.session_id,
             stage=self.state["stage"],
             intent=self.state["intent"],
-            has_payload_logic=self.state["payload_logic"] is not None,
-            has_payload_style=self.state["payload_style"] is not None,
-            has_payload_mapper=self.state["payload_mapper"] is not None,
-            has_payload_review=self.state["payload_review"] is not None,
-            has_payload_final=self.state["payload_final"] is not None,
-            needs_clarification=self.state["needs_clarification"],
+            has_source_text=bool(self.state.get("source_text")),
+            source_text_locked=self.state.get("source_text_locked", False),
+            has_logic_artifact=(
+                artifacts.get("logic_artifact") is not None or self.state["payload_logic"] is not None
+            ),
+            has_style_artifact=(
+                artifacts.get("style_artifact") is not None or self.state["payload_style"] is not None
+            ),
+            has_plan_review_artifact=artifacts.get("plan_review_artifact") is not None,
+            has_mapper_artifact=(
+                artifacts.get("mapper_artifact") is not None or self.state["payload_mapper"] is not None
+            ),
+            has_final_review_artifact=(
+                artifacts.get("final_review_artifact") is not None or self.state["payload_review"] is not None
+            ),
+            has_final_prompt_artifact=(
+                artifacts.get("final_prompt_artifact") is not None or self.state["payload_final"] is not None
+            ),
+            has_bypass_warning=bool(self.state.get("bypass_warnings")),
+            needs_clarification=bool(
+                self.state.get("pending_clarification") or self.state.get("needs_clarification")
+            ),
+            interrupted=self.state.get("interrupted", False),
             user_confirmed=self.state["user_confirmed"],
             error_count=self.state["error_count"],
             updated_at=self.updated_at,

@@ -15,7 +15,7 @@ from app.api.deps import (
 )
 from app.core.errors import SessionNotFoundError
 from app.core.logging import get_request_id
-from app.schemas import ChatMessageRequest, ChatMessageResponse
+from app.schemas import ChatResumeRequest, ChatRunRequest, ChatWorkflowResponse
 from app.services import ChatService, SessionService, SessionTaskManager
 from app.graph import WorkflowEventStore
 
@@ -23,31 +23,52 @@ from app.graph import WorkflowEventStore
 router = APIRouter(prefix="/api/chat", tags=["chat"])
 
 
-@router.post("/message", response_model=ChatMessageResponse, status_code=status.HTTP_202_ACCEPTED)
-async def submit_message(
-    payload: ChatMessageRequest,
+@router.post("/run", response_model=ChatWorkflowResponse, status_code=status.HTTP_202_ACCEPTED)
+async def run_workflow(
+    payload: ChatRunRequest,
     request: Request,
     chat_service: ChatService = Depends(get_chat_service),
     session_service: SessionService = Depends(get_session_service),
-) -> ChatMessageResponse:
+) -> ChatWorkflowResponse:
     request_id = get_request_id()
-    operation = chat_service.submit_message(
+    operation = chat_service.run_workflow(
         session_id=payload.session_id,
         request_id=request_id,
-        message=payload.message,
-        attachment_ids=payload.attachments,
+        source_text=payload.source_text,
+        user_feedback=payload.user_feedback,
     )
     summary = session_service.get_summary(payload.session_id)
-    return ChatMessageResponse(
+    return ChatWorkflowResponse(
         session_id=payload.session_id,
         stage=summary.stage,
         summary=summary,
         stream_url=f"/api/chat/stream/{payload.session_id}",
-        response_message=(
-            "Clarification response accepted."
-            if operation == "resume_workflow"
-            else "Workflow request accepted."
-        ),
+        operation=operation,
+        response_message="Workflow request accepted.",
+    )
+
+
+@router.post("/resume", response_model=ChatWorkflowResponse, status_code=status.HTTP_202_ACCEPTED)
+async def resume_workflow(
+    payload: ChatResumeRequest,
+    request: Request,
+    chat_service: ChatService = Depends(get_chat_service),
+    session_service: SessionService = Depends(get_session_service),
+) -> ChatWorkflowResponse:
+    request_id = get_request_id()
+    operation = chat_service.resume_workflow(
+        session_id=payload.session_id,
+        request_id=request_id,
+        user_feedback=payload.user_feedback,
+    )
+    summary = session_service.get_summary(payload.session_id)
+    return ChatWorkflowResponse(
+        session_id=payload.session_id,
+        stage=summary.stage,
+        summary=summary,
+        stream_url=f"/api/chat/stream/{payload.session_id}",
+        operation=operation,
+        response_message="Clarification response accepted.",
     )
 
 

@@ -38,7 +38,17 @@ export type EventType =
   | "review_failed"
   | "prompt_ready"
   | "image_generated"
+  | "workflow_warning"
   | "error";
+
+export type ReviewPhase = "post_plan" | "post_mapper";
+
+export type WorkflowWarningType = "clarification_limit_reached" | "review_limit_reached";
+
+export type WorkflowOperation =
+  | "run_source_text"
+  | "run_user_feedback"
+  | "resume_user_feedback";
 
 export type GenerateStatus = "accepted" | "running" | "completed" | "failed";
 
@@ -62,12 +72,17 @@ export interface SessionSummary {
   session_id: string;
   stage: StageName;
   intent: IntentType;
-  has_payload_logic: boolean;
-  has_payload_style: boolean;
-  has_payload_mapper: boolean;
-  has_payload_review: boolean;
-  has_payload_final: boolean;
+  has_source_text: boolean;
+  source_text_locked: boolean;
+  has_logic_artifact: boolean;
+  has_style_artifact: boolean;
+  has_plan_review_artifact: boolean;
+  has_mapper_artifact: boolean;
+  has_final_review_artifact: boolean;
+  has_final_prompt_artifact: boolean;
+  has_bypass_warning: boolean;
   needs_clarification: boolean;
+  interrupted: boolean;
   user_confirmed: boolean;
   error_count: number;
   updated_at: string;
@@ -156,13 +171,29 @@ export interface PayloadFinal {
   ready_for_generation: boolean;
 }
 
+export interface TextArtifact {
+  tool_name: string;
+  content: string;
+  prompt_version: string;
+  updated_at: string;
+}
+
+export interface WorkflowWarning {
+  warning_type: WorkflowWarningType;
+  message: string;
+  loop_id: string;
+  review_phase: ReviewPhase | null;
+  created_at: string;
+}
+
 export interface ArtifactsBundle {
   session_id: string;
-  payload_logic: LogicSpec | null;
-  payload_style: StyleSpec | null;
-  payload_mapper: MapperSpec | null;
-  payload_review: ReviewSpec | null;
-  payload_final: PayloadFinal | null;
+  logic_artifact: TextArtifact | null;
+  style_artifact: TextArtifact | null;
+  plan_review_artifact: TextArtifact | null;
+  mapper_artifact: TextArtifact | null;
+  final_review_artifact: TextArtifact | null;
+  final_prompt_artifact: TextArtifact | null;
 }
 
 export interface CleanupReport {

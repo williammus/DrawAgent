@@ -164,6 +164,68 @@ class LLMClient:
 
         return dict(parsed)
 
+    def generate_with_tools(
+        self,
+        prompt: str,
+        *,
+        tools: list[dict[str, Any]],
+        system_prompt: str | None = None,
+        model: str | None = None,
+        temperature: float = 0.0,
+        tool_choice: str | dict[str, Any] = "auto",
+    ) -> dict[str, Any]:
+        resolved_model = model or self.model
+        if not resolved_model:
+            raise LLMInvocationError(
+                "LLM model is not configured.",
+                details={"model": resolved_model, "base_url": self.base_url or None},
+            )
+
+        messages: list[dict[str, str]] = []
+        if system_prompt:
+            messages.append({"role": "system", "content": system_prompt})
+        messages.append({"role": "user", "content": prompt})
+
+        last_error: Exception | None = None
+        for attempt in range(1, self.max_retries + 1):
+            try:
+                logger.info(
+                    "Invoking LLM tool request model=%s base_url=%s attempt=%s",
+                    resolved_model,
+                    self.base_url or "-",
+                    attempt,
+                )
+                response = self._get_client().chat.completions.create(
+                    model=resolved_model,
+                    messages=messages,
+                    temperature=temperature,
+                    tools=tools,
+                    tool_choice=tool_choice,
+                )
+                return self._extract_tool_response(response)
+            except (LLMInvocationError, ArtifactValidationError):
+                raise
+            except Exception as exc:
+                last_error = exc
+                logger.warning(
+                    "LLM tool request failed model=%s base_url=%s attempt=%s error_type=%s error=%s",
+                    resolved_model,
+                    self.base_url or "-",
+                    attempt,
+                    type(exc).__name__,
+                    exc,
+                )
+
+        raise LLMInvocationError(
+            "LLM tool invocation failed after retries.",
+            details={
+                "model": resolved_model,
+                "base_url": self.base_url or None,
+                "attempts": self.max_retries,
+                **self._serialize_exception(last_error),
+            },
+        ) from last_error
+
     def run_connectivity_diagnostic(
         self,
         *,
@@ -230,6 +292,58 @@ class LLMClient:
             return "\n".join(parts)
 
         return str(content or "")
+
+    def _extract_tool_response(self, response: Any) -> dict[str, Any]:
+        choices = getattr(response, "choices", None)
+        if not choices:
+            raise LLMInvocationError("LLM returned no choices.")
+
+        choice = choices[0]
+        message = getattr(choice, "message", None)
+        if message is None:
+            raise LLMInvocationError("LLM returned no message payload.")
+
+        tool_calls: list[dict[str, Any]] = []
+        for tool_call in getattr(message, "tool_calls", None) or []:
+            function = getattr(tool_call, "function", None)
+            tool_name = getattr(function, "name", None)
+            raw_arguments = getattr(function, "arguments", "{}")
+            if not tool_name:
+                raise ArtifactValidationError(
+                    "LLM returned a tool call without a tool name.",
+                    details={"tool_call": str(tool_call)},
+                )
+            try:
+                parsed_arguments = json.loads(raw_arguments or "{}")
+            except json.JSONDecodeError as exc:
+                raise ArtifactValidationError(
+                    "LLM returned invalid tool call arguments.",
+                    details={
+                        "tool_name": tool_name,
+                        "raw_arguments": raw_arguments,
+                    },
+                ) from exc
+            if not isinstance(parsed_arguments, Mapping):
+                raise ArtifactValidationError(
+                    "LLM tool call arguments must be a JSON object.",
+                    details={
+                        "tool_name": tool_name,
+                        "parsed_type": type(parsed_arguments).__name__,
+                    },
+                )
+            tool_calls.append(
+                {
+                    "tool_call_id": getattr(tool_call, "id", None),
+                    "tool_name": tool_name,
+                    "arguments": dict(parsed_arguments),
+                }
+            )
+
+        return {
+            "assistant_text": self._extract_content(response),
+            "tool_calls": tool_calls,
+            "finish_reason": getattr(choice, "finish_reason", None),
+        }
 
     def _extract_json_candidate(self, text: str) -> str:
         stripped = text.strip()

@@ -10,21 +10,21 @@ PROMPT_ROOT = Path(__file__).resolve().parent
 
 
 PROMPT_MANIFEST: dict[str, dict[str, str]] = {
-    "orchestrator": {"v1": "orchestrator/v1.md"},
-    "logician": {"v2_json": "logician/v2_json.md"},
-    "style_configurator": {"v1": "style_configurator/v1.md"},
-    "visual_mapper": {"v1": "visual_mapper/v1.md"},
-    "critic": {"v1": "critic/v1.md"},
-    "summary": {"v1": "summary/v1.md"},
+    "orchestrator": {"v1": "orchestrator/v1.md", "v2": "orchestrator/v2.md"},
+    "logician": {"v1": "logician/v1.md", "v2": "logician/v2.md"},
+    "style_configurator": {"v1": "style_configurator/v1.md", "v2": "style_configurator/v2.md"},
+    "visual_mapper": {"v1": "visual_mapper/v1.md", "v2": "visual_mapper/v2.md"},
+    "critic": {"v1": "critic/v1.md", "v2": "critic/v2.md"},
+    "summary": {"v1": "summary/v1.md", "v2": "summary/v2.md"},
 }
 
 DEFAULT_PROMPT_VERSIONS: dict[str, str] = {
-    "orchestrator": "v1",
-    "logician": "v2_json",
-    "style_configurator": "v1",
-    "visual_mapper": "v1",
-    "critic": "v1",
-    "summary": "v1",
+    "orchestrator": "v2",
+    "logician": "v2",
+    "style_configurator": "v2",
+    "visual_mapper": "v2",
+    "critic": "v2",
+    "summary": "v2",
 }
 
 

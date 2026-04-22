@@ -4,6 +4,7 @@ import type {
   ArtifactsBundle,
   SessionSummary,
   StoredFileMeta,
+  WorkflowWarning,
 } from "../types/domain";
 import type { ApiErrorDetail, SseEventData } from "../types/api";
 import type {
@@ -28,6 +29,7 @@ interface AppState {
   isGeneratingImage: boolean;
   isPromptReady: boolean;
   clarificationQuestion: string | null;
+  workflowWarnings: WorkflowWarning[];
   selectedAttachmentIds: string[];
   artifactDrawerOpen: boolean;
   composerMode: ComposerMode;
@@ -48,6 +50,7 @@ interface AppState {
   replaceThinkingMessage: (text: string) => void;
   clearThinkingMessages: () => void;
   setClarification: (question: string | null) => void;
+  addWorkflowWarning: (warning: WorkflowWarning) => void;
   setSelectedAttachmentIds: (fileIds: string[]) => void;
   toggleAttachmentSelection: (fileId: string) => void;
   setArtifactDrawerOpen: (open: boolean) => void;
@@ -74,6 +77,7 @@ export function createInitialAppState() {
     isGeneratingImage: false,
     isPromptReady: false,
     clarificationQuestion: null,
+    workflowWarnings: [] as WorkflowWarning[],
     selectedAttachmentIds: [] as string[],
     artifactDrawerOpen: false,
     composerMode: "default" as ComposerMode,
@@ -96,7 +100,7 @@ export const useAppStore = create<AppState>((set) => ({
     set((state) => ({
       summary,
       workspaceStatus: deriveWorkspaceStatus(summary.stage, state.workspaceStatus),
-      isPromptReady: summary.has_payload_final && summary.stage === "prompt_ready",
+      isPromptReady: summary.has_final_prompt_artifact && summary.stage === "prompt_ready",
     })),
   setUploadedFiles: (files) =>
     set({
@@ -116,7 +120,7 @@ export const useAppStore = create<AppState>((set) => ({
   setArtifacts: (artifacts) =>
     set({
       artifacts,
-      isPromptReady: Boolean(artifacts?.payload_final?.ready_for_generation),
+      isPromptReady: Boolean(artifacts?.final_prompt_artifact),
     }),
   setLatestEventId: (eventId) =>
     set((state) => ({
@@ -172,6 +176,10 @@ export const useAppStore = create<AppState>((set) => ({
       clarificationQuestion: question,
       composerMode: question ? "clarification" : "default",
     }),
+  addWorkflowWarning: (warning) =>
+    set((state) => ({
+      workflowWarnings: [...state.workflowWarnings, warning],
+    })),
   setSelectedAttachmentIds: (selectedAttachmentIds) =>
     set({
       selectedAttachmentIds,
@@ -224,6 +232,7 @@ export const useAppStore = create<AppState>((set) => ({
           stage: event.stage,
           updated_at: event.timestamp,
           needs_clarification: event.event_type === "clarification_required",
+          interrupted: event.event_type === "clarification_required",
         };
       }
 
@@ -239,15 +248,24 @@ export const useAppStore = create<AppState>((set) => ({
         case "clarification_required":
           nextState.workspaceStatus = "waiting_clarification";
           nextState.composerMode = "clarification";
-          nextState.clarificationQuestion = event.clarification_question;
+          nextState.clarificationQuestion = event.question;
           nextState.isWorkflowRunning = false;
           break;
         case "review_failed":
           nextState.workspaceStatus = "workflow_running";
           break;
+        case "workflow_warning":
+          nextState.workflowWarnings = [...state.workflowWarnings, {
+            warning_type: event.warning_type,
+            message: event.message,
+            loop_id: event.loop_id,
+            review_phase: event.review_phase,
+            created_at: event.timestamp,
+          }];
+          break;
         case "prompt_ready":
           nextState.workspaceStatus = "prompt_reviewing";
-          nextState.isPromptReady = event.ready_for_generation;
+          nextState.isPromptReady = true;
           nextState.isWorkflowRunning = false;
           nextState.clarificationQuestion = null;
           nextState.composerMode = "default";

@@ -39,17 +39,18 @@ export function ArtifactDrawer({ artifacts, open, onToggle, onRefresh }: Artifac
           <EmptyState>流程推进后，逻辑、风格、布局、评审和 Final Prompt 会逐步出现在这里。</EmptyState>
         ) : (
           ([
-            ["payload_logic", artifacts.payload_logic],
-            ["payload_style", artifacts.payload_style],
-            ["payload_mapper", artifacts.payload_mapper],
-            ["payload_review", artifacts.payload_review],
-            ["payload_final", artifacts.payload_final],
+            ["logic_artifact", artifacts.logic_artifact],
+            ["style_artifact", artifacts.style_artifact],
+            ["plan_review_artifact", artifacts.plan_review_artifact],
+            ["mapper_artifact", artifacts.mapper_artifact],
+            ["final_review_artifact", artifacts.final_review_artifact],
+            ["final_prompt_artifact", artifacts.final_prompt_artifact],
           ] as const).map(([key, value]) => (
             <section key={key} className="rounded-[22px] border border-white/10 bg-white/[0.03] p-4">
               <h3 className="text-sm font-medium text-white">{toHeadline(key)}</h3>
               {value ? (
                 <pre className="mt-3 overflow-x-auto whitespace-pre-wrap text-xs leading-6 text-slate-300">
-                  {JSON.stringify(value, null, 2)}
+                  {value.content}
                 </pre>
               ) : (
                 <p className="mt-3 text-sm text-slate-500">尚未生成</p>

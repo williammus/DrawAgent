@@ -1,8 +1,15 @@
 import { http } from "../lib/http";
-import type { ChatMessageRequest, ChatMessageResponse } from "../types/api";
+import type { ChatResumeRequest, ChatRunRequest, ChatWorkflowResponse } from "../types/api";
 
-export function sendChatMessage(payload: ChatMessageRequest) {
-  return http<ChatMessageResponse>("/api/chat/message", {
+export function runWorkflow(payload: ChatRunRequest) {
+  return http<ChatWorkflowResponse>("/api/chat/run", {
+    method: "POST",
+    bodyJson: payload,
+  });
+}
+
+export function resumeWorkflow(payload: ChatResumeRequest) {
+  return http<ChatWorkflowResponse>("/api/chat/resume", {
     method: "POST",
     bodyJson: payload,
   });

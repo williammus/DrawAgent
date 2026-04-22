@@ -1,11 +1,11 @@
 import { Copy } from "lucide-react";
 import { toast } from "sonner";
 
-import type { PayloadFinal } from "../../types/domain";
+import type { TextArtifact } from "../../types/domain";
 import { ActionButtonGroup } from "./ActionButtonGroup";
 
 interface PromptPreviewCardProps {
-  payload: PayloadFinal;
+  payload: TextArtifact;
   disabled?: boolean;
   showActions?: boolean;
   onConfirm: () => void;
@@ -38,27 +38,11 @@ export function PromptPreviewCard({
 
       <div className="mt-5 grid gap-4 xl:grid-cols-2">
         <PromptBlock
-          title="中文 Prompt"
-          value={payload.final_prompt_cn}
-          onCopy={() => void copyText(payload.final_prompt_cn, "中文 Prompt")}
-        />
-        <PromptBlock
-          title="English Prompt"
-          value={payload.final_prompt_en}
-          onCopy={() => void copyText(payload.final_prompt_en, "English Prompt")}
+          title="Final Prompt"
+          value={payload.content}
+          onCopy={() => void copyText(payload.content, "Final Prompt")}
         />
       </div>
-
-      {payload.generation_notes.length > 0 ? (
-        <div className="mt-4 rounded-2xl border border-white/10 bg-black/10 p-4 text-sm text-slate-100">
-          <p className="text-xs uppercase tracking-[0.2em] text-slate-400">Generation Notes</p>
-          <ul className="mt-3 space-y-2 text-sm text-slate-200">
-            {payload.generation_notes.map((item) => (
-              <li key={item}>- {item}</li>
-            ))}
-          </ul>
-        </div>
-      ) : null}
 
       {showActions ? <ActionButtonGroup disabled={disabled} onConfirm={onConfirm} onFeedback={onFeedback} /> : null}
     </section>

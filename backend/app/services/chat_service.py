@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 from copy import deepcopy
 
-from app.core.errors import DrawAgentError, ResourceConflictError
+from app.core.errors import DrawAgentError, InputValidationError, ResourceConflictError
 from app.graph import WorkflowEventStore, WorkflowRunner
 from app.schemas.common import ErrorCode, StageName
 from app.schemas.events import ErrorEvent
@@ -28,13 +28,13 @@ class ChatService:
         self.event_store = event_store
         self.task_manager = task_manager
 
-    def submit_message(
+    def run_workflow(
         self,
         *,
         session_id: str,
         request_id: str,
-        message: str,
-        attachment_ids: list[str],
+        source_text: str | None = None,
+        user_feedback: str | None = None,
     ) -> str:
         active_operation = self.task_manager.active_operation(session_id)
         if active_operation is not None:
@@ -43,26 +43,22 @@ class ChatService:
                 details={"session_id": session_id, "active_operation": active_operation},
             )
 
-        selected_files = self.session_service.resolve_attachments(session_id, attachment_ids)
-        state = self.session_service.set_active_source_files(session_id, selected_files)
-        operation = "resume_workflow" if state["interrupted"] else "run_workflow"
+        if bool(source_text) == bool(user_feedback):
+            raise InputValidationError(
+                "Exactly one run input must be provided.",
+                details={"session_id": session_id},
+            )
+        operation = "run_source_text" if source_text is not None else "run_user_feedback"
 
         async def run_in_background() -> None:
             try:
-                if operation == "resume_workflow":
-                    await asyncio.to_thread(
-                        self.workflow_runner.resume,
-                        session_id,
-                        request_id,
-                        message,
-                    )
-                else:
-                    await asyncio.to_thread(
-                        self.workflow_runner.run,
-                        session_id,
-                        request_id,
-                        message,
-                    )
+                await asyncio.to_thread(
+                    self.workflow_runner.run,
+                    session_id,
+                    request_id,
+                    source_text=source_text,
+                    user_feedback=user_feedback,
+                )
             except Exception as exc:
                 self._record_background_failure(session_id, request_id, exc)
 
@@ -73,6 +69,39 @@ class ChatService:
             coroutine=run_in_background(),
         )
         return operation
+
+    def resume_workflow(
+        self,
+        *,
+        session_id: str,
+        request_id: str,
+        user_feedback: str,
+    ) -> str:
+        active_operation = self.task_manager.active_operation(session_id)
+        if active_operation is not None:
+            raise ResourceConflictError(
+                "Session already has an active background task.",
+                details={"session_id": session_id, "active_operation": active_operation},
+            )
+
+        async def run_in_background() -> None:
+            try:
+                await asyncio.to_thread(
+                    self.workflow_runner.resume,
+                    session_id,
+                    request_id,
+                    user_feedback,
+                )
+            except Exception as exc:
+                self._record_background_failure(session_id, request_id, exc)
+
+        self.task_manager.start_task(
+            session_id,
+            operation="resume_user_feedback",
+            request_id=request_id,
+            coroutine=run_in_background(),
+        )
+        return "resume_user_feedback"
 
     def _record_background_failure(self, session_id: str, request_id: str, exc: Exception) -> None:
         try:

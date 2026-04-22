@@ -1,9 +1,18 @@
-from app.schemas.agents import OrchestratorDecisionSpec
+from app.schemas.agents import (
+    AskClarificationToolInput,
+    ControllerResponse,
+    ControllerToolCall,
+    CriticToolInput,
+    EmptyToolInput,
+    OrchestratorDecisionSpec,
+    ToolExecutionResult,
+)
 from app.schemas.api import (
     ApiErrorResponse,
     ArtifactResponse,
-    ChatMessageRequest,
-    ChatMessageResponse,
+    ChatResumeRequest,
+    ChatRunRequest,
+    ChatWorkflowResponse,
     GenerateResponse,
     SseEventEnvelope,
     SessionDeleteResponse,
@@ -12,6 +21,7 @@ from app.schemas.api import (
     UploadResponse,
 )
 from app.schemas.artifacts import (
+    ClarificationAction,
     CleanupReport,
     FinalPromptSpec,
     GeneratedImageMeta,
@@ -21,6 +31,8 @@ from app.schemas.artifacts import (
     SessionStateSummary,
     StoredFileMeta,
     StyleSpec,
+    TextArtifact,
+    WorkflowWarning,
 )
 from app.schemas.common import (
     ErrorCode,
@@ -29,18 +41,27 @@ from app.schemas.common import (
     IntentType,
     NodeName,
     ReviewErrorStage,
+    ReviewPhase,
     StageName,
+    WorkflowWarningType,
 )
-from app.schemas.events import AgentEvent
+from app.schemas.events import AgentEvent, WorkflowWarningEvent
 
 __all__ = [
     "AgentEvent",
     "ApiErrorResponse",
+    "AskClarificationToolInput",
     "ArtifactResponse",
-    "ChatMessageRequest",
-    "ChatMessageResponse",
+    "ChatResumeRequest",
+    "ChatRunRequest",
+    "ChatWorkflowResponse",
+    "ClarificationAction",
     "CleanupReport",
+    "ControllerResponse",
+    "ControllerToolCall",
+    "CriticToolInput",
     "ErrorCode",
+    "EmptyToolInput",
     "EventType",
     "FinalPromptSpec",
     "GenerateResponse",
@@ -52,6 +73,7 @@ __all__ = [
     "NodeName",
     "OrchestratorDecisionSpec",
     "ReviewErrorStage",
+    "ReviewPhase",
     "ReviewSpec",
     "SessionDeleteResponse",
     "SessionInitResponse",
@@ -60,6 +82,11 @@ __all__ = [
     "SseEventEnvelope",
     "StoredFileMeta",
     "StyleSpec",
+    "TextArtifact",
+    "ToolExecutionResult",
     "UploadDeleteResponse",
     "UploadResponse",
+    "WorkflowWarning",
+    "WorkflowWarningEvent",
+    "WorkflowWarningType",
 ]
