@@ -1,0 +1,529 @@
+{
+  "checkpoint_id": "test-session-97da1705-847c-4b4b-a1f9-7033e78c3ccb-prompt-ready",
+  "workflow_state": {
+    "session_id": "test-session",
+    "user_input": "???????????? prompt",
+    "document_context": {
+      "file_count": 1,
+      "parsed_file_count": 1,
+      "warnings": [],
+      "combined_text": "DCdetector uses dual attention and contrastive learning for time series anomaly detection.",
+      "combined_excerpt": "DCdetector uses dual attention and contrastive learning for time series anomaly detection.",
+      "files": [
+        {
+          "name": "sample.pdf",
+          "extension": ".pdf",
+          "status": "parsed",
+          "parser": "pypdf",
+          "char_count": 88
+        }
+      ]
+    },
+    "document_context_summary": {
+      "file_count": 1,
+      "parsed_file_count": 1,
+      "warnings": [],
+      "combined_excerpt": "DCdetector uses dual attention and contrastive learning for time series anomaly detection.",
+      "files": [
+        {
+          "name": "sample.pdf",
+          "extension": ".pdf",
+          "status": "parsed",
+          "parser": "pypdf",
+          "char_count": 88
+        }
+      ]
+    },
+    "selected_skill": "scientific_diagram",
+    "skill_plan": [
+      {
+        "stage": "logic_extraction",
+        "agent_name": "logic_extraction",
+        "review_required": true,
+        "review_phase": "logic_review"
+      },
+      {
+        "stage": "style_extraction",
+        "agent_name": "style_extraction",
+        "review_required": true,
+        "review_phase": "style_review"
+      },
+      {
+        "stage": "visual_mapping",
+        "agent_name": "visual_mapping",
+        "review_required": true,
+        "review_phase": "visual_review"
+      },
+      {
+        "stage": "summarization",
+        "agent_name": "summarization",
+        "review_required": true,
+        "review_phase": "final_prompt_review"
+      },
+      {
+        "stage": "image_generation",
+        "agent_name": "image_generation",
+        "review_required": false,
+        "trigger": "user_confirm"
+      }
+    ],
+    "messages": [
+      {
+        "id": "e24071a3-dc79-4046-8ebb-31bda22c9e3a",
+        "status": "processed",
+        "from_role": "review_tool",
+        "to_role": "controller",
+        "message_type": "positive_check",
+        "task_id": "a46bc5e3-d325-4963-92be-9c4e9d60abc5",
+        "task_type": "logic_extraction",
+        "summary": "logic_extraction passed review.",
+        "payload": {
+          "review": {
+            "approved": true,
+            "blocking": false,
+            "retry_targets": [],
+            "issues": [],
+            "recommendations": [],
+            "notes": "Deterministic fallback review approved the artifact because the required fields are present. Review model runtime error: LLM provider is not configured."
+          },
+          "artifact": {
+            "key": "logician",
+            "value": {
+              "chart_title": "Scientific Diagram Draft",
+              "core_method_summary": "DCdetector uses dual attention and contrastive learning for time series anomaly detection.",
+              "containers": [
+                {
+                  "id": "container_main",
+                  "label": "Main Pipeline"
+                }
+              ],
+              "nodes": [
+                {
+                  "id": "input",
+                  "label": "Input"
+                },
+                {
+                  "id": "core_method",
+                  "label": "Core Method"
+                },
+                {
+                  "id": "output",
+                  "label": "Output"
+                }
+              ],
+              "edges": [
+                {
+                  "source": "input",
+                  "target": "core_method"
+                },
+                {
+                  "source": "core_method",
+                  "target": "output"
+                }
+              ],
+              "modification_instruction": "???????????? prompt",
+              "source_refs": [
+                "sample.pdf"
+              ]
+            }
+          }
+        }
+      },
+      {
+        "id": "6b7860c5-f318-4c5f-914b-b70c79e34f47",
+        "status": "processed",
+        "from_role": "review_tool",
+        "to_role": "controller",
+        "message_type": "positive_check",
+        "task_id": "0b0a7959-2b23-49ad-8e1a-82ee0a4cd9a3",
+        "task_type": "style_extraction",
+        "summary": "style_extraction passed review.",
+        "payload": {
+          "review": {
+            "approved": true,
+            "blocking": false,
+            "retry_targets": [],
+            "issues": [],
+            "recommendations": [],
+            "notes": "Deterministic fallback review approved the artifact because the required fields are present. Review model runtime error: LLM provider is not configured."
+          },
+          "artifact": {
+            "key": "style_designer",
+            "value": {
+              "primary_discipline": "computer science",
+              "specialized_field": "scientific diagram",
+              "target_venue": "top-tier conference",
+              "palette": [
+                "#1F2937",
+                "#334155",
+                "#64748B",
+                "#E2E8F0",
+                "#F8FAFC"
+              ],
+              "typography": {
+                "title": "bold sans-serif",
+                "body": "clean sans-serif"
+              },
+              "shape_rules": [
+                "Use clean rectangles",
+                "Use soft rounded corners sparingly"
+              ],
+              "layout_preferences": [
+                "Left-to-right flow",
+                "Clear grouping",
+                "Consistent spacing"
+              ],
+              "negative_rules": [
+                "No photorealism",
+                "No heavy shadows",
+                "No decorative clutter"
+              ],
+              "retrieved_style_docs": [
+                "scientific_diagram skill fallback"
+              ]
+            }
+          }
+        }
+      },
+      {
+        "id": "07dd76a7-1944-4cd6-94ac-39de913b86f0",
+        "status": "processed",
+        "from_role": "review_tool",
+        "to_role": "controller",
+        "message_type": "positive_check",
+        "task_id": "1a912833-f4a0-4ab2-97c0-c8cc7fe26017",
+        "task_type": "visual_mapping",
+        "summary": "visual_mapping passed review.",
+        "payload": {
+          "review": {
+            "approved": true,
+            "blocking": false,
+            "retry_targets": [],
+            "issues": [],
+            "recommendations": [],
+            "notes": "Deterministic fallback review approved the artifact because the required fields are present. Review model runtime error: LLM provider is not configured."
+          },
+          "artifact": {
+            "key": "visual_mapper",
+            "value": {
+              "layout_direction": "left_to_right",
+              "canvas": {
+                "width": 1536,
+                "height": 1024
+              },
+              "groups": [
+                {
+                  "id": "main_group",
+                  "label": "Main Pipeline"
+                }
+              ],
+              "node_positions": [
+                {
+                  "node_id": "input",
+                  "x": 120,
+                  "y": 220,
+                  "shape": "rectangle"
+                },
+                {
+                  "node_id": "core_method",
+                  "x": 340,
+                  "y": 220,
+                  "shape": "rectangle"
+                },
+                {
+                  "node_id": "output",
+                  "x": 560,
+                  "y": 220,
+                  "shape": "rectangle"
+                }
+              ],
+              "edge_routes": [
+                {
+                  "source": "input",
+                  "target": "core_method"
+                },
+                {
+                  "source": "core_method",
+                  "target": "output"
+                }
+              ],
+              "legend": {
+                "required": true
+              },
+              "alignment_notes": [
+                "Fallback layout used because worker model was unavailable."
+              ]
+            }
+          }
+        }
+      },
+      {
+        "id": "59e65727-d353-479f-ac70-112c665965b4",
+        "status": "processed",
+        "from_role": "review_tool",
+        "to_role": "controller",
+        "message_type": "positive_check",
+        "task_id": "3014536e-17a1-47b4-81a9-13ab18b010c2",
+        "task_type": "summarization",
+        "summary": "summarization passed review.",
+        "payload": {
+          "review": {
+            "approved": true,
+            "blocking": false,
+            "retry_targets": [],
+            "issues": [],
+            "recommendations": [],
+            "notes": "Deterministic fallback review approved the artifact because the required fields are present. Review model runtime error: LLM provider is not configured."
+          },
+          "artifact": {
+            "key": "summarizer",
+            "value": {
+              "english_prompt": "Create a clean, publication-ready scientific framework diagram titled 'Scientific Diagram Draft'. Use a flat 2D academic style, clear grouping, readable labels, and a structured left-to-right layout.",
+              "chinese_explanation": "已生成一个基于当前工件的英文绘图 Prompt 草案，请确认后出图。",
+              "image_constraints": [
+                "Flat 2D",
+                "Publication-ready",
+                "High readability"
+              ],
+              "legend_required": true,
+              "checkpoint_ready": true,
+              "review_warning": "Worker fallback output was used.",
+              "review_status": "fallback_generated"
+            }
+          }
+        }
+      }
+    ],
+    "pending_tasks": [],
+    "active_task": null,
+    "completed_tasks": [
+      {
+        "task_type": "logic_extraction",
+        "status": "approved"
+      },
+      {
+        "task_type": "style_extraction",
+        "status": "approved"
+      },
+      {
+        "task_type": "visual_mapping",
+        "status": "approved"
+      },
+      {
+        "task_type": "summarization",
+        "status": "approved"
+      }
+    ],
+    "artifacts": {
+      "payload_logic": {
+        "key": "logician",
+        "value": {
+          "chart_title": "Scientific Diagram Draft",
+          "core_method_summary": "DCdetector uses dual attention and contrastive learning for time series anomaly detection.",
+          "containers": [
+            {
+              "id": "container_main",
+              "label": "Main Pipeline"
+            }
+          ],
+          "nodes": [
+            {
+              "id": "input",
+              "label": "Input"
+            },
+            {
+              "id": "core_method",
+              "label": "Core Method"
+            },
+            {
+              "id": "output",
+              "label": "Output"
+            }
+          ],
+          "edges": [
+            {
+              "source": "input",
+              "target": "core_method"
+            },
+            {
+              "source": "core_method",
+              "target": "output"
+            }
+          ],
+          "modification_instruction": "???????????? prompt",
+          "source_refs": [
+            "sample.pdf"
+          ]
+        }
+      },
+      "payload_style": {
+        "key": "style_designer",
+        "value": {
+          "primary_discipline": "computer science",
+          "specialized_field": "scientific diagram",
+          "target_venue": "top-tier conference",
+          "palette": [
+            "#1F2937",
+            "#334155",
+            "#64748B",
+            "#E2E8F0",
+            "#F8FAFC"
+          ],
+          "typography": {
+            "title": "bold sans-serif",
+            "body": "clean sans-serif"
+          },
+          "shape_rules": [
+            "Use clean rectangles",
+            "Use soft rounded corners sparingly"
+          ],
+          "layout_preferences": [
+            "Left-to-right flow",
+            "Clear grouping",
+            "Consistent spacing"
+          ],
+          "negative_rules": [
+            "No photorealism",
+            "No heavy shadows",
+            "No decorative clutter"
+          ],
+          "retrieved_style_docs": [
+            "scientific_diagram skill fallback"
+          ]
+        }
+      },
+      "payload_mapper": {
+        "key": "visual_mapper",
+        "value": {
+          "layout_direction": "left_to_right",
+          "canvas": {
+            "width": 1536,
+            "height": 1024
+          },
+          "groups": [
+            {
+              "id": "main_group",
+              "label": "Main Pipeline"
+            }
+          ],
+          "node_positions": [
+            {
+              "node_id": "input",
+              "x": 120,
+              "y": 220,
+              "shape": "rectangle"
+            },
+            {
+              "node_id": "core_method",
+              "x": 340,
+              "y": 220,
+              "shape": "rectangle"
+            },
+            {
+              "node_id": "output",
+              "x": 560,
+              "y": 220,
+              "shape": "rectangle"
+            }
+          ],
+          "edge_routes": [
+            {
+              "source": "input",
+              "target": "core_method"
+            },
+            {
+              "source": "core_method",
+              "target": "output"
+            }
+          ],
+          "legend": {
+            "required": true
+          },
+          "alignment_notes": [
+            "Fallback layout used because worker model was unavailable."
+          ]
+        }
+      },
+      "payload_final": {
+        "key": "summarizer",
+        "value": {
+          "english_prompt": "Create a clean, publication-ready scientific framework diagram titled 'Scientific Diagram Draft'. Use a flat 2D academic style, clear grouping, readable labels, and a structured left-to-right layout.",
+          "chinese_explanation": "已生成一个基于当前工件的英文绘图 Prompt 草案，请确认后出图。",
+          "image_constraints": [
+            "Flat 2D",
+            "Publication-ready",
+            "High readability"
+          ],
+          "legend_required": true,
+          "checkpoint_ready": true,
+          "review_warning": "Worker fallback output was used.",
+          "review_status": "fallback_generated"
+        }
+      },
+      "image_result": {
+        "key": "image_generator",
+        "value": {}
+      }
+    },
+    "review_history": [
+      {
+        "approved": true,
+        "blocking": false,
+        "retry_targets": [],
+        "issues": [],
+        "recommendations": [],
+        "notes": "Deterministic fallback review approved the artifact because the required fields are present. Review model runtime error: LLM provider is not configured."
+      },
+      {
+        "approved": true,
+        "blocking": false,
+        "retry_targets": [],
+        "issues": [],
+        "recommendations": [],
+        "notes": "Deterministic fallback review approved the artifact because the required fields are present. Review model runtime error: LLM provider is not configured."
+      },
+      {
+        "approved": true,
+        "blocking": false,
+        "retry_targets": [],
+        "issues": [],
+        "recommendations": [],
+        "notes": "Deterministic fallback review approved the artifact because the required fields are present. Review model runtime error: LLM provider is not configured."
+      },
+      {
+        "approved": true,
+        "blocking": false,
+        "retry_targets": [],
+        "issues": [],
+        "recommendations": [],
+        "notes": "Deterministic fallback review approved the artifact because the required fields are present. Review model runtime error: LLM provider is not configured."
+      }
+    ],
+    "warnings": [],
+    "stage": "summarization",
+    "next_hop": "controller",
+    "awaiting_user_confirmation": false,
+    "stop_requested": false,
+    "released_with_warnings": false,
+    "prompt_checkpoint_id": "",
+    "prompt_checkpoint_path": "",
+    "final_response": {},
+    "error": ""
+  },
+  "payload_final": {
+    "key": "summarizer",
+    "value": {
+      "english_prompt": "Create a clean, publication-ready scientific framework diagram titled 'Scientific Diagram Draft'. Use a flat 2D academic style, clear grouping, readable labels, and a structured left-to-right layout.",
+      "chinese_explanation": "已生成一个基于当前工件的英文绘图 Prompt 草案，请确认后出图。",
+      "image_constraints": [
+        "Flat 2D",
+        "Publication-ready",
+        "High readability"
+      ],
+      "legend_required": true,
+      "checkpoint_ready": true,
+      "review_warning": "Worker fallback output was used.",
+      "review_status": "fallback_generated"
+    }
+  }
+}
