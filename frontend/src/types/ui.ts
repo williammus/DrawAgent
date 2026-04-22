@@ -18,7 +18,6 @@ export type EventStreamStatus = "connecting" | "connected" | "reconnecting" | "d
 export type WorkspaceStatus =
   | "bootstrapping"
   | "idle"
-  | "uploading"
   | "workflow_running"
   | "waiting_clarification"
   | "prompt_reviewing"

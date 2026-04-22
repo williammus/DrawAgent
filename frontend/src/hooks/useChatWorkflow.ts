@@ -1,25 +1,19 @@
 import { useCallback, useState } from "react";
 
 import { resumeWorkflow, runWorkflow } from "../api/chat";
-import { deleteSession, initSession } from "../api/session";
-import { uploadFiles, deleteUploadedFile } from "../api/upload";
 import { generateImage } from "../api/generate";
-import { MAX_FILE_SIZE_MB, MAX_SESSION_FILES } from "../lib/constants";
+import { deleteSession, initSession } from "../api/session";
 import { ApiError } from "../lib/http";
 import { useAppStore } from "../store/useAppStore";
 
 export function useChatWorkflow() {
   const [submitting, setSubmitting] = useState(false);
-  const [uploading, setUploading] = useState(false);
   const [generating, setGenerating] = useState(false);
   const sessionId = useAppStore((state) => state.sessionId);
   const summary = useAppStore((state) => state.summary);
-  const uploadedFiles = useAppStore((state) => state.uploadedFiles);
   const addMessage = useAppStore((state) => state.addMessage);
   const replaceThinkingMessage = useAppStore((state) => state.replaceThinkingMessage);
   const setSummary = useAppStore((state) => state.setSummary);
-  const addUploadedFiles = useAppStore((state) => state.addUploadedFiles);
-  const removeUploadedFile = useAppStore((state) => state.removeUploadedFile);
   const setLastError = useAppStore((state) => state.setLastError);
   const setWorkspaceStatus = useAppStore((state) => state.setWorkspaceStatus);
   const resetForNewSession = useAppStore((state) => state.resetForNewSession);
@@ -27,7 +21,8 @@ export function useChatWorkflow() {
   const setArtifacts = useAppStore((state) => state.setArtifacts);
   const setGeneratedImageUrl = useAppStore((state) => state.setGeneratedImageUrl);
   const setClarification = useAppStore((state) => state.setClarification);
-  const setNotice = useAppStore((state) => state.setNotice);
+  const setSourceText = useAppStore((state) => state.setSourceText);
+  const syncSourceTextLock = useAppStore((state) => state.syncSourceTextLock);
 
   const pushApiError = useCallback(
     (error: unknown, fallbackMessage: string) => {
@@ -51,7 +46,46 @@ export function useChatWorkflow() {
     [addMessage, setLastError]
   );
 
-  const submitMessage = useCallback(
+  const submitSourceText = useCallback(
+    async (sourceText: string) => {
+      if (!sessionId || !sourceText.trim()) {
+        return;
+      }
+
+      setSubmitting(true);
+      replaceThinkingMessage("系统正在接收完整绘图内容…");
+      setWorkspaceStatus("workflow_running");
+
+      try {
+        const next = sourceText.trim();
+        const response = await runWorkflow({
+          session_id: sessionId,
+          source_text: next,
+        });
+        setSourceText(next);
+        setSummary(response.summary);
+        syncSourceTextLock(response.summary.source_text_locked);
+        setClarification(null);
+      } catch (error) {
+        pushApiError(error, "提交完整绘图内容失败。");
+        setWorkspaceStatus("failed");
+      } finally {
+        setSubmitting(false);
+      }
+    },
+    [
+      pushApiError,
+      replaceThinkingMessage,
+      sessionId,
+      setClarification,
+      setSourceText,
+      setSummary,
+      setWorkspaceStatus,
+      syncSourceTextLock,
+    ]
+  );
+
+  const submitFeedback = useCallback(
     async (message: string) => {
       if (!sessionId || !message.trim()) {
         return;
@@ -64,31 +98,18 @@ export function useChatWorkflow() {
         timestamp: new Date().toISOString(),
         text: message.trim(),
       });
-      replaceThinkingMessage("系统正在接收你的请求…");
+      replaceThinkingMessage("系统正在接收你的补充反馈…");
       setWorkspaceStatus("workflow_running");
 
       try {
-        const response =
-          summary?.interrupted || summary?.needs_clarification
-            ? await resumeWorkflow({
-                session_id: sessionId,
-                user_feedback: message.trim(),
-              })
-            : await runWorkflow(
-                summary?.has_source_text || hasAnyArtifacts(summary)
-                  ? {
-                      session_id: sessionId,
-                      user_feedback: message.trim(),
-                    }
-                  : {
-                      session_id: sessionId,
-                      source_text: message.trim(),
-                    }
-              );
+        const response = await runWorkflow({
+          session_id: sessionId,
+          user_feedback: message.trim(),
+        });
         setSummary(response.summary);
         setClarification(null);
       } catch (error) {
-        pushApiError(error, "提交消息失败。");
+        pushApiError(error, "提交补充反馈失败。");
         setWorkspaceStatus("failed");
       } finally {
         setSubmitting(false);
@@ -99,81 +120,51 @@ export function useChatWorkflow() {
       pushApiError,
       replaceThinkingMessage,
       sessionId,
-      summary,
       setClarification,
       setSummary,
       setWorkspaceStatus,
     ]
   );
 
-  const submitUploads = useCallback(
-    async (files: FileList | null) => {
-      if (!sessionId || !files || files.length === 0) {
+  const resumeClarification = useCallback(
+    async (message: string) => {
+      if (!sessionId || !message.trim()) {
         return;
       }
 
-      if (uploadedFiles.length + files.length > MAX_SESSION_FILES) {
-        setNotice({
-          title: "附件数量超出限制",
-          description: `单会话最多允许 ${MAX_SESSION_FILES} 个附件。`,
-          tone: "error",
-        });
-        return;
-      }
+      setSubmitting(true);
+      addMessage({
+        id: crypto.randomUUID(),
+        kind: "user",
+        timestamp: new Date().toISOString(),
+        text: message.trim(),
+      });
+      replaceThinkingMessage("系统正在接收你的澄清补充…");
+      setWorkspaceStatus("workflow_running");
 
-      const oversized = Array.from(files).find((file) => file.size > MAX_FILE_SIZE_MB * 1024 * 1024);
-      if (oversized) {
-        setNotice({
-          title: "附件过大",
-          description: `${oversized.name} 超过 ${MAX_FILE_SIZE_MB}MB 上限。`,
-          tone: "error",
-        });
-        return;
-      }
-
-      setUploading(true);
-      setWorkspaceStatus("uploading");
       try {
-        const response = await uploadFiles(sessionId, Array.from(files));
-        addUploadedFiles(response.files);
-        setWorkspaceStatus(summary ? derivePostUploadStatus(summary.stage) : "idle");
-        setNotice({
-          title: "附件上传完成",
-          description: `已添加 ${response.files.length} 个附件。`,
-          tone: "success",
+        const response = await resumeWorkflow({
+          session_id: sessionId,
+          user_feedback: message.trim(),
         });
+        setSummary(response.summary);
+        setClarification(null);
       } catch (error) {
-        pushApiError(error, "上传附件失败。");
+        pushApiError(error, "提交澄清回复失败。");
         setWorkspaceStatus("failed");
       } finally {
-        setUploading(false);
+        setSubmitting(false);
       }
     },
     [
-      addUploadedFiles,
+      addMessage,
       pushApiError,
+      replaceThinkingMessage,
       sessionId,
-      setNotice,
+      setClarification,
+      setSummary,
       setWorkspaceStatus,
-      summary,
-      uploadedFiles.length,
     ]
-  );
-
-  const removeAttachment = useCallback(
-    async (fileId: string) => {
-      if (!sessionId) {
-        return;
-      }
-
-      try {
-        await deleteUploadedFile(sessionId, fileId);
-        removeUploadedFile(fileId);
-      } catch (error) {
-        pushApiError(error, "删除附件失败。");
-      }
-    },
-    [pushApiError, removeUploadedFile, sessionId]
   );
 
   const confirmGeneration = useCallback(async () => {
@@ -230,11 +221,13 @@ export function useChatWorkflow() {
       setWorkspaceStatus("idle");
       setArtifacts(null);
       setGeneratedImageUrl(null);
+      setSourceText("");
+      syncSourceTextLock(false);
       addMessage({
         id: crypto.randomUUID(),
         kind: "assistant",
         timestamp: new Date().toISOString(),
-        text: "已为你开启新的绘图会话。",
+        text: "已为你开启新的绘图会话。请先提交完整绘图内容。",
       });
     } catch (error) {
       pushApiError(error, "重新创建会话失败。");
@@ -248,35 +241,18 @@ export function useChatWorkflow() {
     setArtifacts,
     setGeneratedImageUrl,
     setSession,
+    setSourceText,
     setWorkspaceStatus,
+    syncSourceTextLock,
   ]);
 
   return {
     submitting,
-    uploading,
     generating,
-    submitMessage,
-    submitUploads,
-    removeAttachment,
+    submitSourceText,
+    submitFeedback,
+    resumeClarification,
     confirmGeneration,
     restartSession,
   };
-}
-
-function derivePostUploadStatus(stage: string) {
-  return stage === "failed" ? "failed" : "idle";
-}
-
-function hasAnyArtifacts(summary: ReturnType<typeof useAppStore.getState>["summary"]) {
-  if (!summary) {
-    return false;
-  }
-  return (
-    summary.has_logic_artifact ||
-    summary.has_style_artifact ||
-    summary.has_plan_review_artifact ||
-    summary.has_mapper_artifact ||
-    summary.has_final_review_artifact ||
-    summary.has_final_prompt_artifact
-  );
 }

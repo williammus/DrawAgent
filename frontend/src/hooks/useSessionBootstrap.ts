@@ -33,7 +33,7 @@ export function useSessionBootstrap() {
           id: crypto.randomUUID(),
           kind: "assistant",
           timestamp: new Date().toISOString(),
-          text: "会话已创建。你可以直接描述需要绘制的科研图，或先上传论文摘要、截图和参考材料。",
+          text: "会话已创建。请先在上方输入完整绘图内容，系统会在需要时主动追问，并在 Prompt 准备好后让你确认是否出图。",
         });
       } catch (error) {
         if (!active) {

@@ -1,17 +1,17 @@
 import { useEffect } from "react";
-import { PanelRight, RotateCcw } from "lucide-react";
+import { AlertTriangle, PanelRight, RotateCcw } from "lucide-react";
 import { toast } from "sonner";
 
 import { ArtifactDrawer } from "./components/artifact/ArtifactDrawer";
-import { AttachmentTray } from "./components/chat/AttachmentTray";
 import { Composer } from "./components/chat/Composer";
 import { ImageResultCard } from "./components/chat/ImageResultCard";
 import { MessageList } from "./components/chat/MessageList";
 import { PromptPreviewCard } from "./components/chat/PromptPreviewCard";
+import { SourceTextPanel } from "./components/chat/SourceTextPanel";
 import { Button } from "./components/common/Button";
 import { EmptyState } from "./components/common/EmptyState";
-import { LeftSidebar } from "./components/shell/LeftSidebar";
 import { AppShell } from "./components/shell/AppShell";
+import { LeftSidebar } from "./components/shell/LeftSidebar";
 import { TopStatusBar } from "./components/shell/TopStatusBar";
 import { useArtifacts } from "./hooks/useArtifacts";
 import { useChatWorkflow } from "./hooks/useChatWorkflow";
@@ -24,30 +24,29 @@ function App() {
 
   const sessionId = useAppStore((state) => state.sessionId);
   const summary = useAppStore((state) => state.summary);
-  const uploadedFiles = useAppStore((state) => state.uploadedFiles);
+  const sourceText = useAppStore((state) => state.sourceText);
+  const sourceTextLocked = useAppStore((state) => state.sourceTextLocked);
   const artifacts = useAppStore((state) => state.artifacts);
   const messages = useAppStore((state) => state.messages);
+  const workflowWarnings = useAppStore((state) => state.workflowWarnings);
   const eventStreamStatus = useAppStore((state) => state.eventStreamStatus);
   const generatedImageUrl = useAppStore((state) => state.generatedImageUrl);
-  const selectedAttachmentIds = useAppStore((state) => state.selectedAttachmentIds);
   const artifactDrawerOpen = useAppStore((state) => state.artifactDrawerOpen);
   const composerMode = useAppStore((state) => state.composerMode);
   const workspaceStatus = useAppStore((state) => state.workspaceStatus);
   const clarificationQuestion = useAppStore((state) => state.clarificationQuestion);
-  const setSelectedAttachmentIds = useAppStore((state) => state.setSelectedAttachmentIds);
   const setArtifactDrawerOpen = useAppStore((state) => state.setArtifactDrawerOpen);
   const setComposerMode = useAppStore((state) => state.setComposerMode);
-  const setWorkspaceStatus = useAppStore((state) => state.setWorkspaceStatus);
   const setNotice = useAppStore((state) => state.setNotice);
   const notice = useAppStore((state) => state.notice);
+  const setSourceText = useAppStore((state) => state.setSourceText);
   const { refreshArtifacts } = useArtifacts();
   const {
     submitting,
-    uploading,
     generating,
-    submitMessage,
-    submitUploads,
-    removeAttachment,
+    submitSourceText,
+    submitFeedback,
+    resumeClarification,
     confirmGeneration,
     restartSession,
   } = useChatWorkflow();
@@ -70,27 +69,9 @@ function App() {
     setNotice(null);
   }, [notice, setNotice]);
 
-  const handleToggleAttachment = (fileId: string) => {
-    if (selectedAttachmentIds.length === 0) {
-      setSelectedAttachmentIds(uploadedFiles.filter((file) => file.file_id !== fileId).map((file) => file.file_id));
-      return;
-    }
-
-    if (selectedAttachmentIds.includes(fileId)) {
-      const next = selectedAttachmentIds.filter((id) => id !== fileId);
-      setSelectedAttachmentIds(next.length === 0 ? [] : next);
-      return;
-    }
-
-    const next = [...selectedAttachmentIds, fileId];
-    if (next.length === uploadedFiles.length) {
-      setSelectedAttachmentIds([]);
-      return;
-    }
-    setSelectedAttachmentIds(next);
-  };
-
   const finalPrompt = artifacts?.final_prompt_artifact;
+  const latestWarning = workflowWarnings.length > 0 ? workflowWarnings[workflowWarnings.length - 1] : null;
+  const hasRiskWarning = Boolean(latestWarning || summary?.has_bypass_warning);
 
   return (
     <AppShell
@@ -102,7 +83,13 @@ function App() {
           open={artifactDrawerOpen}
         />
       }
-      sidebar={<LeftSidebar onRestart={() => void restartSession()} summary={summary} uploadedFiles={uploadedFiles} />}
+      sidebar={
+        <LeftSidebar
+          onRestart={() => void restartSession()}
+          summary={summary}
+          workflowWarnings={workflowWarnings}
+        />
+      }
       statusBar={<TopStatusBar streamStatus={eventStreamStatus} summary={summary} />}
     >
       <div className="h-full min-h-0">
@@ -126,11 +113,29 @@ function App() {
 
           <div className="min-h-0 flex-1 overflow-y-auto px-6 py-6">
             <div className="mx-auto max-w-[920px] space-y-5">
+              <SourceTextPanel
+                disabled={!sessionId || submitting || generating}
+                locked={sourceTextLocked}
+                onChange={setSourceText}
+                onSubmit={() => submitSourceText(sourceText)}
+                value={sourceText}
+              />
+
+              {latestWarning ? (
+                <div className="rounded-[22px] border border-amber-400/20 bg-amber-400/10 px-4 py-4 text-sm text-amber-50">
+                  <div className="flex items-center gap-2 text-xs uppercase tracking-[0.18em] text-amber-200">
+                    <AlertTriangle className="h-4 w-4" />
+                    Workflow Warning
+                  </div>
+                  <p className="mt-2 leading-6">{latestWarning.message}</p>
+                </div>
+              ) : null}
+
               <MessageList messages={messages} />
 
               {workspaceStatus === "idle" && messages.length <= 1 ? (
                 <EmptyState>
-                  先输入完整绘图内容或直接描述你的科研图需求。系统会在需要时主动追问，并在 Prompt 准备好后让你确认是否出图。
+                  先在上方提交完整绘图内容。完成后，底部输入框会用于澄清回复、局部修改和补充细节。
                 </EmptyState>
               ) : null}
 
@@ -143,13 +148,13 @@ function App() {
               {finalPrompt ? (
                 <PromptPreviewCard
                   disabled={generating || workspaceStatus === "workflow_running"}
-                  showActions={workspaceStatus === "prompt_reviewing"}
+                  hasRiskWarning={hasRiskWarning}
                   onConfirm={() => void confirmGeneration()}
                   onFeedback={() => {
                     setComposerMode("default");
-                    setWorkspaceStatus("idle");
                   }}
                   payload={finalPrompt}
+                  showActions={workspaceStatus === "prompt_reviewing"}
                 />
               ) : null}
 
@@ -170,17 +175,11 @@ function App() {
 
           <div className="border-t border-white/10 px-6 py-5">
             <div className="mx-auto max-w-[920px] space-y-4">
-              <AttachmentTray
-                files={uploadedFiles}
-                onDelete={(fileId) => void removeAttachment(fileId)}
-                onToggle={handleToggleAttachment}
-                selectedAttachmentIds={selectedAttachmentIds}
-              />
               <Composer
                 composerMode={composerMode}
-                disabled={!sessionId || uploading || generating}
-                onSubmit={submitMessage}
-                onUpload={submitUploads}
+                disabled={!sessionId || !sourceTextLocked || submitting || generating}
+                onSubmit={composerMode === "clarification" ? resumeClarification : submitFeedback}
+                sourceTextLocked={sourceTextLocked}
                 submitting={submitting}
               />
             </div>

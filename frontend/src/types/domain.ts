@@ -108,74 +108,12 @@ export interface GeneratedImageMeta {
   generated_at: string;
 }
 
-export interface LogicSpec {
-  chart_title: string;
-  core_method_summary: string;
-  containers: Array<{
-    container_id: string;
-    name: string;
-    description: string | null;
-    children: string[];
-  }>;
-  nodes: Array<{
-    node_id: string;
-    label: string;
-    description: string | null;
-    node_type: string | null;
-  }>;
-  edges: Array<{
-    source: string;
-    target: string;
-    label: string | null;
-    relation: string | null;
-  }>;
-}
-
-export interface StyleSpec {
-  discipline: string;
-  target_journal: string | null;
-  primary_palette: string[];
-  secondary_palette: string[];
-  font_family: string;
-  line_style: string;
-  node_shape_rules: Record<string, string>;
-  layout_style: string;
-  legend_style: string;
-  forbidden_visual_elements: string[];
-  style_keywords: string[];
-}
-
-export interface MapperSpec {
-  narrative_direction: string;
-  section_layout: string[];
-  module_positions: Record<string, string>;
-  grouping_strategy: string;
-  edge_style_mapping: Record<string, string>;
-  visual_hierarchy: string[];
-  annotation_strategy: string;
-  legend_placement: string | null;
-}
-
-export interface ReviewSpec {
-  passed: boolean;
-  error_stage: ReviewErrorStage | null;
-  reason: string;
-  fix_suggestion: string[];
-}
-
-export interface PayloadFinal {
-  final_prompt_en: string;
-  final_prompt_cn: string;
-  prompt_version: string;
-  generation_notes: string[];
-  ready_for_generation: boolean;
-}
-
 export interface TextArtifact {
   tool_name: string;
   content: string;
   prompt_version: string;
   updated_at: string;
+  metadata?: Record<string, unknown>;
 }
 
 export interface WorkflowWarning {

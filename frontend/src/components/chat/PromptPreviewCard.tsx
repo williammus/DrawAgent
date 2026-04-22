@@ -8,6 +8,7 @@ interface PromptPreviewCardProps {
   payload: TextArtifact;
   disabled?: boolean;
   showActions?: boolean;
+  hasRiskWarning?: boolean;
   onConfirm: () => void;
   onFeedback: () => void;
 }
@@ -16,6 +17,7 @@ export function PromptPreviewCard({
   payload,
   disabled,
   showActions = true,
+  hasRiskWarning = false,
   onConfirm,
   onFeedback,
 }: PromptPreviewCardProps) {
@@ -31,10 +33,23 @@ export function PromptPreviewCard({
           <p className="text-xs uppercase tracking-[0.24em] text-emerald-200">Final Prompt</p>
           <h3 className="mt-2 text-lg font-semibold text-white">Prompt 已就绪，确认后即可生成图片</h3>
         </div>
-        <span className="rounded-full border border-emerald-300/20 bg-black/10 px-3 py-1 text-xs text-emerald-100">
-          {payload.prompt_version}
-        </span>
+        <div className="flex flex-wrap items-center justify-end gap-2">
+          {hasRiskWarning ? (
+            <span className="rounded-full border border-amber-300/20 bg-amber-400/10 px-3 py-1 text-xs text-amber-50">
+              带风险放行
+            </span>
+          ) : null}
+          <span className="rounded-full border border-emerald-300/20 bg-black/10 px-3 py-1 text-xs text-emerald-100">
+            {payload.prompt_version}
+          </span>
+        </div>
       </div>
+
+      {hasRiskWarning ? (
+        <div className="mt-4 rounded-[20px] border border-amber-300/20 bg-black/10 px-4 py-3 text-sm leading-6 text-amber-50">
+          当前 Prompt 是在 warning 放行条件下生成的。生成前请先确认逻辑、风格和布局是否符合预期。
+        </div>
+      ) : null}
 
       <div className="mt-5 grid gap-4 xl:grid-cols-2">
         <PromptBlock

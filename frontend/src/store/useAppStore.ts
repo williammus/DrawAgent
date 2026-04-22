@@ -1,11 +1,6 @@
 import { create } from "zustand";
 
-import type {
-  ArtifactsBundle,
-  SessionSummary,
-  StoredFileMeta,
-  WorkflowWarning,
-} from "../types/domain";
+import type { ArtifactsBundle, SessionSummary, WorkflowWarning } from "../types/domain";
 import type { ApiErrorDetail, SseEventData } from "../types/api";
 import type {
   AppNotice,
@@ -18,7 +13,8 @@ import type {
 interface AppState {
   sessionId: string | null;
   summary: SessionSummary | null;
-  uploadedFiles: StoredFileMeta[];
+  sourceText: string;
+  sourceTextLocked: boolean;
   artifacts: ArtifactsBundle | null;
   latestEventId: number;
   eventStreamStatus: EventStreamStatus;
@@ -30,7 +26,6 @@ interface AppState {
   isPromptReady: boolean;
   clarificationQuestion: string | null;
   workflowWarnings: WorkflowWarning[];
-  selectedAttachmentIds: string[];
   artifactDrawerOpen: boolean;
   composerMode: ComposerMode;
   workspaceStatus: WorkspaceStatus;
@@ -38,9 +33,8 @@ interface AppState {
   bootstrapped: boolean;
   setSession: (sessionId: string, summary: SessionSummary) => void;
   setSummary: (summary: SessionSummary) => void;
-  setUploadedFiles: (files: StoredFileMeta[]) => void;
-  addUploadedFiles: (files: StoredFileMeta[]) => void;
-  removeUploadedFile: (fileId: string) => void;
+  setSourceText: (text: string) => void;
+  syncSourceTextLock: (locked: boolean) => void;
   setArtifacts: (artifacts: ArtifactsBundle | null) => void;
   setLatestEventId: (eventId: number) => void;
   setEventStreamStatus: (status: EventStreamStatus) => void;
@@ -51,8 +45,6 @@ interface AppState {
   clearThinkingMessages: () => void;
   setClarification: (question: string | null) => void;
   addWorkflowWarning: (warning: WorkflowWarning) => void;
-  setSelectedAttachmentIds: (fileIds: string[]) => void;
-  toggleAttachmentSelection: (fileId: string) => void;
   setArtifactDrawerOpen: (open: boolean) => void;
   setComposerMode: (mode: ComposerMode) => void;
   setWorkspaceStatus: (status: WorkspaceStatus) => void;
@@ -66,7 +58,8 @@ export function createInitialAppState() {
   return {
     sessionId: null,
     summary: null,
-    uploadedFiles: [],
+    sourceText: "",
+    sourceTextLocked: false,
     artifacts: null,
     latestEventId: 0,
     eventStreamStatus: "connecting" as EventStreamStatus,
@@ -78,7 +71,6 @@ export function createInitialAppState() {
     isPromptReady: false,
     clarificationQuestion: null,
     workflowWarnings: [] as WorkflowWarning[],
-    selectedAttachmentIds: [] as string[],
     artifactDrawerOpen: false,
     composerMode: "default" as ComposerMode,
     workspaceStatus: "bootstrapping" as WorkspaceStatus,
@@ -92,31 +84,27 @@ const initialState = createInitialAppState();
 export const useAppStore = create<AppState>((set) => ({
   ...initialState,
   setSession: (sessionId, summary) =>
-    set({
+    set((state) => ({
       sessionId,
       summary,
-    }),
+      sourceTextLocked: summary.source_text_locked,
+      sourceText: summary.has_source_text ? state.sourceText : "",
+    })),
   setSummary: (summary) =>
     set((state) => ({
       summary,
+      sourceTextLocked: summary.source_text_locked,
       workspaceStatus: deriveWorkspaceStatus(summary.stage, state.workspaceStatus),
       isPromptReady: summary.has_final_prompt_artifact && summary.stage === "prompt_ready",
     })),
-  setUploadedFiles: (files) =>
+  setSourceText: (sourceText) =>
     set({
-      uploadedFiles: files,
-      selectedAttachmentIds: [],
+      sourceText,
     }),
-  addUploadedFiles: (files) =>
-    set((state) => ({
-      uploadedFiles: [...state.uploadedFiles, ...files],
-      selectedAttachmentIds: [],
-    })),
-  removeUploadedFile: (fileId) =>
-    set((state) => ({
-      uploadedFiles: state.uploadedFiles.filter((file) => file.file_id !== fileId),
-      selectedAttachmentIds: state.selectedAttachmentIds.filter((id) => id !== fileId),
-    })),
+  syncSourceTextLock: (sourceTextLocked) =>
+    set({
+      sourceTextLocked,
+    }),
   setArtifacts: (artifacts) =>
     set({
       artifacts,
@@ -180,19 +168,6 @@ export const useAppStore = create<AppState>((set) => ({
     set((state) => ({
       workflowWarnings: [...state.workflowWarnings, warning],
     })),
-  setSelectedAttachmentIds: (selectedAttachmentIds) =>
-    set({
-      selectedAttachmentIds,
-    }),
-  toggleAttachmentSelection: (fileId) =>
-    set((state) => {
-      const exists = state.selectedAttachmentIds.includes(fileId);
-      return {
-        selectedAttachmentIds: exists
-          ? state.selectedAttachmentIds.filter((id) => id !== fileId)
-          : [...state.selectedAttachmentIds, fileId],
-      };
-    }),
   setArtifactDrawerOpen: (artifactDrawerOpen) =>
     set({
       artifactDrawerOpen,
@@ -254,15 +229,23 @@ export const useAppStore = create<AppState>((set) => ({
         case "review_failed":
           nextState.workspaceStatus = "workflow_running";
           break;
-        case "workflow_warning":
-          nextState.workflowWarnings = [...state.workflowWarnings, {
+        case "workflow_warning": {
+          const warning = {
             warning_type: event.warning_type,
             message: event.message,
             loop_id: event.loop_id,
             review_phase: event.review_phase,
             created_at: event.timestamp,
-          }];
+          };
+          nextState.workflowWarnings = [...state.workflowWarnings, warning];
+          if (nextState.summary) {
+            nextState.summary = {
+              ...nextState.summary,
+              has_bypass_warning: true,
+            };
+          }
           break;
+        }
         case "prompt_ready":
           nextState.workspaceStatus = "prompt_reviewing";
           nextState.isPromptReady = true;

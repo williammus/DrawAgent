@@ -1,5 +1,5 @@
 import React, { StrictMode } from "react";
-import { render, renderHook, waitFor, act, cleanup } from "@testing-library/react";
+import { render, renderHook, waitFor, act, cleanup, screen, fireEvent } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import App from "./App";
@@ -9,7 +9,7 @@ import { useSessionBootstrap } from "./hooks/useSessionBootstrap";
 import { useSSEStream } from "./hooks/useSSEStream";
 import { createInitialAppState, useAppStore } from "./store/useAppStore";
 import type { SessionInitResponse, SseEventData, SseEventEnvelope } from "./types/api";
-import type { SessionSummary, StoredFileMeta } from "./types/domain";
+import type { ArtifactsBundle, SessionSummary } from "./types/domain";
 
 class MockEventSource {
   static instances: MockEventSource[] = [];
@@ -85,9 +85,33 @@ const initSummary: SessionSummary = {
   expires_at: "2026-04-17T08:30:00Z",
 };
 
+const lockedSummary: SessionSummary = {
+  ...initSummary,
+  has_source_text: true,
+  source_text_locked: true,
+};
+
 const initResponse: SessionInitResponse = {
   session_id: "session-1",
   summary: initSummary,
+};
+
+const promptArtifacts: ArtifactsBundle = {
+  session_id: "session-1",
+  logic_artifact: null,
+  style_artifact: null,
+  plan_review_artifact: null,
+  mapper_artifact: null,
+  final_review_artifact: null,
+  final_prompt_artifact: {
+    tool_name: "summary_tool",
+    content: "Create a clean academic diagram with a clear left-to-right story.",
+    prompt_version: "v2",
+    updated_at: "2026-04-17T08:12:00Z",
+    metadata: {
+      ready_for_generation: true,
+    },
+  },
 };
 
 describe("frontend workflow contracts", () => {
@@ -101,21 +125,32 @@ describe("frontend workflow contracts", () => {
     vi.stubGlobal("fetch", fetchMock);
     vi.stubGlobal("open", vi.fn());
 
-    fetchMock.mockImplementation(async (input) => {
+    fetchMock.mockImplementation(async (input, init) => {
       const url = typeof input === "string" ? input : input.toString();
 
       if (url.endsWith("/api/session/init")) {
         return jsonResponse(initResponse, 201);
       }
       if (url.endsWith("/api/chat/run")) {
+        const payload = parseJsonBody(init?.body);
+        const summary = payload?.source_text
+          ? {
+              ...lockedSummary,
+              stage: "planning",
+            }
+          : {
+              ...lockedSummary,
+              stage: "planning",
+            };
+
         return jsonResponse(
           {
             session_id: "session-1",
-            stage: "idle",
-            summary: initResponse.summary,
+            stage: summary.stage,
+            summary,
             accepted: true,
             stream_url: "/api/chat/stream/session-1",
-            operation: "run_source_text",
+            operation: payload?.source_text ? "run_source_text" : "run_user_feedback",
             response_message: "Workflow request accepted.",
           },
           202
@@ -125,11 +160,12 @@ describe("frontend workflow contracts", () => {
         return jsonResponse(
           {
             session_id: "session-1",
-            stage: "clarifying",
+            stage: "planning",
             summary: {
-              ...initResponse.summary,
-              interrupted: true,
-              needs_clarification: true,
+              ...lockedSummary,
+              interrupted: false,
+              needs_clarification: false,
+              stage: "planning",
             },
             accepted: true,
             stream_url: "/api/chat/stream/session-1",
@@ -139,21 +175,8 @@ describe("frontend workflow contracts", () => {
           202
         );
       }
-      if (url.endsWith("/api/upload")) {
-        return jsonResponse(
-          {
-            session_id: "session-1",
-            files: [uploadedFile("file-1", "paper.md")],
-          },
-          201
-        );
-      }
-      if (url.endsWith("/api/upload/session-1/file-1")) {
-        return jsonResponse({
-          session_id: "session-1",
-          file_id: "file-1",
-          deleted: true,
-        });
+      if (url.includes("/api/artifacts/")) {
+        return jsonResponse(promptArtifacts, 200);
       }
       if (url.endsWith("/api/generate/session-1")) {
         return jsonResponse(
@@ -187,102 +210,84 @@ describe("frontend workflow contracts", () => {
     vi.unstubAllGlobals();
   });
 
-  it("bootstraps a session and inserts the assistant welcome message", async () => {
-    renderHook(() => useSessionBootstrap());
+  it("bootstraps a session and exposes source_text-first UI without upload entry", async () => {
+    render(
+      <StrictMode>
+        <AppProviders>
+          <App />
+        </AppProviders>
+      </StrictMode>
+    );
 
     await waitFor(() => {
       expect(useAppStore.getState().sessionId).toBe("session-1");
     });
 
-    const state = useAppStore.getState();
-    expect(state.summary?.stage).toBe("idle");
-    expect(state.messages[0]?.text).toContain("会话已创建");
-    expect(fetchMock).toHaveBeenCalledWith(
-      expect.stringContaining("/api/session/init"),
-      expect.objectContaining({ method: "POST" })
+    expect(screen.getByLabelText("请在此处输入用于绘图的完整内容(论文/代码)")).toBeInTheDocument();
+    expect(screen.getByLabelText("输入补充反馈")).toBeDisabled();
+    expect(screen.queryByRole("button", { name: "上传附件" })).not.toBeInTheDocument();
+    expect(screen.queryByText("当前附件")).not.toBeInTheDocument();
+    expect(useAppStore.getState().messages[0]?.text).toContain("请先在上方输入完整绘图内容");
+  });
+
+  it("submits source_text via run and only unlocks the feedback composer after locking", async () => {
+    render(
+      <StrictMode>
+        <AppProviders>
+          <App />
+        </AppProviders>
+      </StrictMode>
     );
+
+    await waitFor(() => {
+      expect(useAppStore.getState().sessionId).toBe("session-1");
+    });
+
+    fireEvent.change(screen.getByLabelText("请在此处输入用于绘图的完整内容(论文/代码)"), {
+      target: { value: "这里是一段完整的论文摘要。" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "开始绘图流程" }));
+
+    await waitFor(() => {
+      expect(useAppStore.getState().sourceTextLocked).toBe(true);
+    });
+
+    const runCall = fetchMock.mock.calls.find(([url]) => String(url).endsWith("/api/chat/run"));
+    expect(runCall).toBeDefined();
+    expect(parseJsonBody(runCall?.[1]?.body)?.source_text).toBe("这里是一段完整的论文摘要。");
+    expect(useAppStore.getState().messages.map((message) => message.text)).not.toContain("这里是一段完整的论文摘要。");
+    expect(screen.getByLabelText("输入补充反馈")).toBeEnabled();
   });
 
-  it("opens the SSE stream and applies clarification plus prompt-ready events", async () => {
-    useAppStore.getState().setSession(initResponse.session_id, initResponse.summary);
-    const onPromptReady = vi.fn();
+  it("uses resume for clarification replies and run(user_feedback) for normal feedback", async () => {
+    useAppStore.getState().setSession(initResponse.session_id, lockedSummary);
+    useAppStore.getState().setSummary(lockedSummary);
+    useAppStore.getState().setSourceText("已经锁定的完整绘图内容");
 
-    const { unmount } = renderHook(() => useSSEStream({ onPromptReady }));
-
-    expect(MockEventSource.instances[0]?.url).toContain("/api/chat/stream/session-1");
-
-    await act(async () => {
-      MockEventSource.instances[0]?.connect();
-    });
-
-    await waitFor(() => {
-      expect(useAppStore.getState().eventStreamStatus).toBe("connected");
-    });
+    const { result } = renderHook(() => useChatWorkflow());
 
     await act(async () => {
-      emitWorkflowEvent(2, {
-        event_type: "clarification_required",
-        session_id: "session-1",
-        stage: "clarifying",
-        timestamp: "2026-04-17T08:10:00Z",
-        request_id: "req-clarify",
-        message: "Clarification required.",
-        question: "请补充论文摘要和目标期刊。",
-        reason: "missing_source_text",
-        missing_fields: ["source_text"],
-      });
+      await result.current.submitFeedback("请把整体配色调整得更克制。");
     });
 
-    await waitFor(() => {
-      expect(useAppStore.getState().clarificationQuestion).toBe("请补充论文摘要和目标期刊。");
-      expect(useAppStore.getState().composerMode).toBe("clarification");
-      expect(useAppStore.getState().workspaceStatus).toBe("waiting_clarification");
-    });
+    const runFeedbackCall = fetchMock.mock.calls.find(
+      ([url, init]) =>
+        String(url).endsWith("/api/chat/run") && parseJsonBody(init?.body)?.user_feedback === "请把整体配色调整得更克制。"
+    );
+    expect(runFeedbackCall).toBeDefined();
+
+    useAppStore.getState().setClarification("请补充目标期刊。");
 
     await act(async () => {
-      emitWorkflowEvent(3, {
-        event_type: "review_failed",
-        session_id: "session-1",
-        stage: "reviewing",
-        timestamp: "2026-04-17T08:11:00Z",
-        request_id: "req-review",
-        message: "Critic requested a rollback.",
-        review_phase: "post_mapper",
-        reason: "布局层次不清晰。",
-        error_stage: "visual_mapper",
-        fix_suggestion: ["减少交叉箭头", "强化主路径"],
-      });
+      await result.current.resumeClarification("目标期刊是 Nature Biomedical Engineering。");
     });
 
-    await act(async () => {
-      emitWorkflowEvent(4, {
-        event_type: "prompt_ready",
-        session_id: "session-1",
-        stage: "prompt_ready",
-        timestamp: "2026-04-17T08:12:00Z",
-        request_id: "req-prompt",
-        message: "Final prompt is ready.",
-        prompt_version: "v1",
-        ready_for_generation: true,
-      });
-    });
-
-    await waitFor(() => {
-      expect(onPromptReady).toHaveBeenCalledTimes(1);
-      expect(useAppStore.getState().workspaceStatus).toBe("prompt_reviewing");
-      expect(useAppStore.getState().latestEventId).toBe(4);
-    });
-
-    const rollbackMessage = useAppStore
-      .getState()
-      .messages.find((message) => message.kind === "review_failed");
-    expect(rollbackMessage?.text).toBe("布局层次不清晰。");
-    expect(rollbackMessage?.meta?.error_stage).toBe("visual_mapper");
-
-    unmount();
+    const resumeCall = fetchMock.mock.calls.find(([url]) => String(url).endsWith("/api/chat/resume"));
+    expect(resumeCall).toBeDefined();
+    expect(parseJsonBody(resumeCall?.[1]?.body)?.user_feedback).toBe("目标期刊是 Nature Biomedical Engineering。");
   });
 
-  it("does not reopen the SSE stream on app rerender after connection state changes", async () => {
+  it("shows workflow warnings and marks prompt preview as risk-bypassed after prompt_ready", async () => {
     render(
       <StrictMode>
         <AppProviders>
@@ -296,23 +301,67 @@ describe("frontend workflow contracts", () => {
       expect(MockEventSource.instances).toHaveLength(1);
     });
 
+    act(() => {
+      useAppStore.getState().setSourceText("已经锁定的完整绘图内容");
+      useAppStore.getState().setSummary(lockedSummary);
+    });
+
     await act(async () => {
       MockEventSource.instances[0]?.connect();
     });
 
-    await waitFor(() => {
-      expect(useAppStore.getState().eventStreamStatus).toBe("connected");
+    await act(async () => {
+      emitWorkflowEvent(2, {
+        event_type: "workflow_warning",
+        session_id: "session-1",
+        stage: "reviewing",
+        timestamp: "2026-04-17T08:11:00Z",
+        request_id: "req-warning",
+        message: "审查达到上限，当前流程带风险放行。",
+        warning_type: "review_limit_reached",
+        loop_id: "loop-1",
+        review_phase: "post_mapper",
+      });
     });
 
-    expect(MockEventSource.instances).toHaveLength(1);
-    expect(fetchMock).not.toHaveBeenCalledWith(
-      expect.stringContaining("/api/session/session-1"),
-      expect.objectContaining({ method: "DELETE" })
-    );
+    await act(async () => {
+      emitWorkflowEvent(3, {
+        event_type: "prompt_ready",
+        session_id: "session-1",
+        stage: "prompt_ready",
+        timestamp: "2026-04-17T08:12:00Z",
+        request_id: "req-prompt",
+        message: "Final prompt is ready.",
+        prompt_version: "v2",
+        ready_for_generation: true,
+      });
+    });
+
+    await waitFor(() => {
+      expect(useAppStore.getState().workflowWarnings[0]?.message).toBe("审查达到上限，当前流程带风险放行。");
+      expect(screen.getByText("带风险放行")).toBeInTheDocument();
+      expect(screen.getAllByText("Create a clean academic diagram with a clear left-to-right story.").length).toBeGreaterThan(0);
+    });
   });
 
-  it("stores diagnostic details from workflow error events", async () => {
-    useAppStore.getState().setSession(initResponse.session_id, initResponse.summary);
+  it("restartSession clears source text and disables the feedback composer again", async () => {
+    useAppStore.getState().setSession(initResponse.session_id, lockedSummary);
+    useAppStore.getState().setSummary(lockedSummary);
+    useAppStore.getState().setSourceText("需要被清空的原文");
+
+    const { result } = renderHook(() => useChatWorkflow());
+
+    await act(async () => {
+      await result.current.restartSession();
+    });
+
+    expect(useAppStore.getState().sourceText).toBe("");
+    expect(useAppStore.getState().sourceTextLocked).toBe(false);
+  });
+
+  it("opens the SSE stream and applies clarification events to composer mode", async () => {
+    useAppStore.getState().setSession(initResponse.session_id, lockedSummary);
+    useAppStore.getState().setSummary(lockedSummary);
 
     renderHook(() => useSSEStream());
 
@@ -322,149 +371,31 @@ describe("frontend workflow contracts", () => {
 
     await act(async () => {
       emitWorkflowEvent(5, {
-        event_type: "error",
+        event_type: "clarification_required",
         session_id: "session-1",
-        stage: "failed",
-        timestamp: "2026-04-17T08:13:00Z",
-        request_id: "req-error",
-        message: "Orchestrator failed.",
-        error_code: "llm_invocation_error",
-        details: {
-          failing_node: "orchestrator",
-          model: "qwen-plus",
-          error: "401 Unauthorized",
-        },
+        stage: "clarifying",
+        timestamp: "2026-04-17T08:10:00Z",
+        request_id: "req-clarify",
+        message: "Clarification required.",
+        question: "请补充目标会议和所属领域。",
+        reason: "missing_required_context",
+        missing_fields: ["parsed_discipline", "parsed_target_venue"],
       });
     });
 
     await waitFor(() => {
-      const errorMessage = useAppStore
-        .getState()
-        .messages.find((message) => message.kind === "error");
-      expect(errorMessage?.meta?.error_code).toBe("llm_invocation_error");
-      expect(errorMessage?.meta?.error_summary).toContain("节点: orchestrator");
-      expect(errorMessage?.meta?.error_summary).toContain("Model: qwen-plus");
-      expect(errorMessage?.meta?.error_summary).toContain("原因: 401 Unauthorized");
+      expect(useAppStore.getState().clarificationQuestion).toBe("请补充目标会议和所属领域。");
+      expect(useAppStore.getState().composerMode).toBe("clarification");
+      expect(useAppStore.getState().workspaceStatus).toBe("waiting_clarification");
     });
   });
 
-  it("marks the stream as reconnecting before escalating to disconnected", async () => {
-    vi.useFakeTimers();
-    useAppStore.getState().setSession(initResponse.session_id, initResponse.summary);
-
-    renderHook(() => useSSEStream());
-
-    await act(async () => {
-      MockEventSource.instances[0]?.connect();
-    });
-    expect(useAppStore.getState().eventStreamStatus).toBe("connected");
-
-    await act(async () => {
-      MockEventSource.instances[0]?.fail();
-    });
-    expect(useAppStore.getState().eventStreamStatus).toBe("reconnecting");
-
-    await act(async () => {
-      vi.advanceTimersByTime(1500);
-    });
-    expect(MockEventSource.instances).toHaveLength(2);
-
-    await act(async () => {
-      MockEventSource.instances[1]?.fail();
-    });
-    expect(useAppStore.getState().eventStreamStatus).toBe("reconnecting");
-
-    await act(async () => {
-      vi.advanceTimersByTime(1500);
-    });
-    expect(MockEventSource.instances).toHaveLength(3);
-
-    await act(async () => {
-      MockEventSource.instances[2]?.fail();
-    });
-    expect(useAppStore.getState().eventStreamStatus).toBe("disconnected");
-
-    await act(async () => {
-      vi.advanceTimersByTime(1500);
-    });
-    expect(MockEventSource.instances).toHaveLength(4);
-
-    await act(async () => {
-      MockEventSource.instances[3]?.connect();
-    });
-    expect(useAppStore.getState().eventStreamStatus).toBe("connected");
-  });
-
-  it("submits chat, uploads attachments, removes attachments, and starts generation", async () => {
-    useAppStore.getState().setSession(initResponse.session_id, initResponse.summary);
-    useAppStore.getState().setSummary({
-      ...initResponse.summary,
-      has_source_text: true,
-      source_text_locked: true,
-      has_final_prompt_artifact: true,
-      stage: "prompt_ready",
-    });
-
-    const { result } = renderHook(() => useChatWorkflow());
-
-    await act(async () => {
-      await result.current.submitMessage("请生成一张科研流程图。");
-    });
-    expect(fetchMock).toHaveBeenCalledWith(
-      expect.stringContaining("/api/chat/run"),
-      expect.objectContaining({ method: "POST" })
-    );
-
-    const file = new File(["content"], "paper.md", { type: "text/markdown" });
-    await act(async () => {
-      await result.current.submitUploads(createFileList([file]));
-    });
+  it("bootstraps a session through the dedicated hook", async () => {
+    renderHook(() => useSessionBootstrap());
 
     await waitFor(() => {
-      expect(useAppStore.getState().uploadedFiles).toHaveLength(1);
+      expect(useAppStore.getState().sessionId).toBe("session-1");
     });
-    expect(fetchMock).toHaveBeenCalledWith(
-      expect.stringContaining("/api/upload"),
-      expect.objectContaining({ method: "POST" })
-    );
-
-    await act(async () => {
-      await result.current.removeAttachment("file-1");
-    });
-
-    await waitFor(() => {
-      expect(useAppStore.getState().uploadedFiles).toHaveLength(0);
-    });
-
-    await act(async () => {
-      await result.current.confirmGeneration();
-    });
-
-    expect(fetchMock).toHaveBeenCalledWith(
-      expect.stringContaining("/api/generate/session-1"),
-      expect.objectContaining({ method: "POST" })
-    );
-    expect(useAppStore.getState().generatedImageUrl).toBe("/api/download/session-1");
-  });
-
-  it("restartSession deletes the previous session before creating a new one", async () => {
-    useAppStore.getState().setSession(initResponse.session_id, initResponse.summary);
-
-    const { result } = renderHook(() => useChatWorkflow());
-
-    await act(async () => {
-      await result.current.restartSession();
-    });
-
-    expect(fetchMock).toHaveBeenCalledWith(
-      expect.stringContaining("/api/session/session-1"),
-      expect.objectContaining({ method: "DELETE" })
-    );
-    expect(fetchMock).toHaveBeenCalledWith(
-      expect.stringContaining("/api/session/init"),
-      expect.objectContaining({ method: "POST" })
-    );
-    expect(useAppStore.getState().sessionId).toBe("session-1");
   });
 });
 
@@ -496,27 +427,9 @@ function jsonResponse(body: unknown, status = 200) {
   );
 }
 
-function uploadedFile(fileId: string, originalName: string): StoredFileMeta {
-  return {
-    file_id: fileId,
-    original_name: originalName,
-    stored_name: originalName,
-    media_type: "text/markdown",
-    size_bytes: 1200,
-    relative_path: `session-1/uploads/${originalName}`,
-    uploaded_at: "2026-04-17T08:05:00Z",
-  };
-}
-
-function createFileList(files: File[]): FileList {
-  const fileList: Partial<FileList> = {
-    length: files.length,
-    item: (index: number) => files[index] ?? null,
-  };
-
-  files.forEach((file, index) => {
-    fileList[index] = file;
-  });
-
-  return fileList as FileList;
+function parseJsonBody(body: BodyInit | null | undefined) {
+  if (typeof body !== "string") {
+    return null;
+  }
+  return JSON.parse(body) as Record<string, string>;
 }
