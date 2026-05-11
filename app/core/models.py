@@ -29,15 +29,23 @@ class MessageEnvelope(StrictModel):
 
 class VirtualTask(StrictModel):
     task_id: str
-    task_type: Literal[
-        "logic_extraction",
-        "style_extraction",
-        "visual_mapping",
-        "summarization",
-        "image_generation",
-    ]
+    task_type: str
     agent_name: str
+    agent_description: str = ""
+    prompt_name: str = ""
+    model_role: str = ""
+    output_contract: str = "text_artifact"
     output_ref: str
+    input_refs: list[str] = Field(default_factory=list)
+    allowed_input_refs: list[str] = Field(default_factory=list)
+    artifact_aliases: list[str] = Field(default_factory=list)
+    artifact_channels: list[str] = Field(default_factory=list)
+    artifact_channel_sources: dict[str, dict[str, str]] = Field(default_factory=dict)
+    dedupe_artifact_inputs: bool = False
+    stage_goal: str = ""
+    stage_role: str = ""
+    temperature: float = 0.2
+    max_tokens: int = 1800
     review_required: bool = True
     review_phase: str | None = None
     retry_count: int = 0
@@ -96,8 +104,19 @@ class ImageArtifactEnvelope(StrictModel):
 
 class ReviewVerdict(StrictModel):
     approved: bool
+    signal: Literal["positive", "negative", "fatal"] | None = None
     blocking: bool = False
     retry_targets: list[str] = Field(default_factory=list)
     issues: list[str] = Field(default_factory=list)
     recommendations: list[str] = Field(default_factory=list)
     notes: str = ""
+
+    @model_validator(mode="after")
+    def _normalize_signal(self) -> "ReviewVerdict":
+        if self.signal is None:
+            self.signal = "positive" if self.approved else "negative"
+        if self.signal == "positive":
+            self.approved = True
+        elif self.signal in {"negative", "fatal"}:
+            self.approved = False
+        return self

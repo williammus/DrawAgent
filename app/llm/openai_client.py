@@ -263,7 +263,7 @@ class OpenAICompatibleClient:
 
     @staticmethod
     def _json_user_text(payload: dict[str, Any]) -> str:
-        return json.dumps(payload, ensure_ascii=False, indent=2)
+        return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
 
     def _default_headers(self) -> dict[str, str]:
         return {
@@ -464,7 +464,8 @@ class OpenAICompatibleClient:
             "Content-Type": "application/json",
         }
         last_error: Exception | None = None
-        for attempt in range(2):
+        max_attempts = 4
+        for attempt in range(max_attempts):
             try:
                 with httpx.Client(timeout=self.timeout_seconds) as client:
                     response = client.post(url, headers=request_headers, json=payload)
@@ -472,7 +473,30 @@ class OpenAICompatibleClient:
                 return response.json()
             except (httpx.HTTPError, json.JSONDecodeError) as exc:
                 last_error = exc
-                time.sleep(1 + attempt)
+                response = exc.response if isinstance(exc, httpx.HTTPStatusError) else None
+                status_code = response.status_code if response is not None else 0
+                retryable = (
+                    status_code in {408, 409, 425, 429}
+                    or status_code >= 500
+                    or isinstance(exc, httpx.TransportError)
+                )
+                if not retryable or attempt == max_attempts - 1:
+                    body_text = response.text[:800] if response is not None else ""
+                    provider_request_id = self._extract_provider_request_id(
+                        response=response,
+                        body_text=body_text,
+                    )
+                    raise RuntimeError(
+                        f"LLM request failed after retries: status={status_code or 'unknown'} "
+                        f"request_id={provider_request_id or '-'} error={exc}"
+                        + (f" body={body_text}" if body_text else "")
+                    ) from exc
+                retry_after = response.headers.get("retry-after") if response is not None else ""
+                try:
+                    delay = float(retry_after) if retry_after else min(8.0, 1.5 * (2 ** attempt))
+                except ValueError:
+                    delay = min(8.0, 1.5 * (2 ** attempt))
+                time.sleep(delay)
         raise RuntimeError(f"LLM request failed after retries: {last_error}") from last_error
 
     def _collect_trace_headers(self, response: httpx.Response) -> dict[str, str]:
@@ -545,7 +569,8 @@ class OpenAICompatibleClient:
             "Content-Type": "application/json",
         }
         last_error: Exception | None = None
-        for attempt in range(2):
+        max_attempts = 4
+        for attempt in range(max_attempts):
             started_at = datetime.now(timezone.utc)
             try:
                 with httpx.Client(timeout=self.timeout_seconds) as client:
@@ -584,16 +609,24 @@ class OpenAICompatibleClient:
                         data=data,
                         body_text=body_text,
                     )
+                retryable = (
+                    status_code in {408, 409, 425, 429}
+                    or status_code >= 500
+                    or isinstance(exc, httpx.TransportError)
+                )
                 error_message = (
                     f"LLM request failed after retries: status={status_code or 'unknown'} "
                     f"request_id={provider_request_id or '-'} error={exc}"
                     + (f" body={body_text[:800]}" if body_text else "")
-                    if attempt == 1
-                    else ""
                 )
-                if attempt == 1:
+                if not retryable or attempt == max_attempts - 1:
                     raise RuntimeError(error_message) from exc
-                time.sleep(1 + attempt)
+                retry_after = response.headers.get("retry-after") if response is not None else ""
+                try:
+                    delay = float(retry_after) if retry_after else min(8.0, 1.5 * (2 ** attempt))
+                except ValueError:
+                    delay = min(8.0, 1.5 * (2 ** attempt))
+                time.sleep(delay)
         raise RuntimeError(f"LLM request failed after retries: {last_error}") from last_error
 
     def _invoke_selected_tool(self, *, name: str, arguments: dict[str, Any], tools: list[BaseTool]) -> dict[str, Any]:

@@ -27,6 +27,8 @@ def route_skill_decision(
     action: str,
     reason: str,
     skill_name: str = "",
+    target_skill: str = "",
+    detected_intent: str = "",
     question: str = "",
     primary_discipline: str = "",
     conference_name: str = "",
@@ -37,6 +39,8 @@ def route_skill_decision(
     return {
         "action": action,
         "skill_name": skill_name,
+        "target_skill": target_skill,
+        "detected_intent": detected_intent,
         "question": question,
         "reason": reason,
         "primary_discipline": primary_discipline,

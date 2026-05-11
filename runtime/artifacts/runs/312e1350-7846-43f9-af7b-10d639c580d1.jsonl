@@ -1,0 +1,2 @@
+{"event_id": "c88d2d77-5218-40fe-831e-b74f53bc906d", "ts": "2026-05-10T17:38:55.839391+00:00", "event_type": "workflow.started", "session_id": "312e1350-7846-43f9-af7b-10d639c580d1", "has_document": true, "user_input_chars": 0}
+{"event_id": "5d2106d4-1938-4d4a-963d-3b471bc78fcc", "ts": "2026-05-10T17:39:00.061905+00:00", "event_type": "workflow.finished", "session_id": "312e1350-7846-43f9-af7b-10d639c580d1", "stage": "clarification_needed", "selected_skill": "document_ingestion_routing"}

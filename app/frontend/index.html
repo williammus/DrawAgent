@@ -1,0 +1,869 @@
+﻿<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>drawAgent Workspace</title>
+    <style>
+      :root {
+        color-scheme: light;
+        --bg: #ffffff;
+        --panel: rgba(255, 255, 255, 0.92);
+        --panel-strong: #f7f7f8;
+        --panel-user: #f1f1f2;
+        --text: #202123;
+        --muted: #8e8ea0;
+        --line: rgba(32, 33, 35, 0.08);
+        --shadow: 0 24px 80px rgba(15, 23, 42, 0.08);
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      html,
+      body {
+        margin: 0;
+        min-height: 100%;
+      }
+
+      body {
+        background: radial-gradient(circle at top, #fafaf8 0%, #ffffff 24%);
+        color: var(--text);
+        font-family: "Segoe UI Variable", "PingFang SC", "Microsoft YaHei", sans-serif;
+      }
+
+      button,
+      textarea,
+      input {
+        font: inherit;
+      }
+
+      .app-shell {
+        min-height: 100vh;
+        display: flex;
+        flex-direction: column;
+      }
+
+      .app-header {
+        position: sticky;
+        top: 0;
+        z-index: 20;
+        border-bottom: 1px solid rgba(32, 33, 35, 0.04);
+        background: rgba(255, 255, 255, 0.78);
+        backdrop-filter: blur(14px);
+      }
+
+      .header-inner,
+      .thread,
+      .composer-wrap {
+        width: min(1180px, calc(100vw - 40px));
+        margin: 0 auto;
+      }
+
+      .header-inner {
+        height: 68px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 16px;
+      }
+
+      .brand {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+      }
+
+      .brand-mark {
+        width: 34px;
+        height: 34px;
+        border-radius: 12px;
+        display: grid;
+        place-items: center;
+        background: #111111;
+        color: #ffffff;
+        font-size: 13px;
+        font-weight: 800;
+        letter-spacing: 0.08em;
+      }
+
+      .brand-title {
+        font-size: 17px;
+        font-weight: 700;
+        letter-spacing: -0.02em;
+      }
+
+      .brand-subtitle {
+        color: var(--muted);
+        font-size: 12px;
+      }
+
+      .header-actions {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+      }
+
+      .tool-btn {
+        border: 1px solid var(--line);
+        background: rgba(255, 255, 255, 0.85);
+        color: var(--text);
+        min-height: 40px;
+        padding: 0 14px;
+        border-radius: 999px;
+        cursor: pointer;
+      }
+
+      .thread-shell {
+        flex: 1;
+        min-height: 0;
+        display: flex;
+        flex-direction: column;
+      }
+
+      .thread-shell.is-idle {
+        justify-content: center;
+      }
+
+      .thread {
+        flex: 1;
+        display: flex;
+        flex-direction: column;
+        gap: 28px;
+        padding: 38px 0 240px;
+      }
+
+      .thread-shell.is-idle .thread {
+        display: none;
+      }
+
+      .message {
+        display: flex;
+        align-items: flex-end;
+        gap: 0;
+      }
+
+      .message.agent {
+        justify-content: flex-start;
+      }
+
+      .message.user {
+        justify-content: flex-end;
+      }
+
+      .avatar {
+        width: 32px;
+        height: 32px;
+        border-radius: 999px;
+        display: grid;
+        place-items: center;
+        flex: 0 0 32px;
+        font-size: 12px;
+        font-weight: 700;
+      }
+
+      .message.agent .avatar {
+        background: #111111;
+        color: #ffffff;
+      }
+
+      .message.user .avatar {
+        background: #ececef;
+        color: #202123;
+      }
+
+      .avatar {
+        display: none;
+      }
+
+      .message-body {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+      }
+
+      .message.agent .message-body.has-prompt-action {
+        position: relative;
+        padding-right: 0;
+        padding-bottom: 56px;
+      }
+
+      .message.agent .message-body {
+        max-width: min(900px, calc(100% - 80px));
+      }
+
+      .message.user .message-body {
+        max-width: min(720px, 78%);
+        align-items: flex-end;
+      }
+
+      .message.user .bubble {
+        max-width: 100%;
+      }
+
+      .message-meta {
+        display: none;
+      }
+
+      .message-content-row {
+        position: relative;
+      }
+
+      .bubble {
+        border-radius: 30px;
+        padding: 16px 20px;
+        line-height: 1.75;
+        white-space: pre-wrap;
+        word-break: break-word;
+      }
+
+      .message.agent .bubble {
+        background: var(--panel-strong);
+        border-top-left-radius: 12px;
+      }
+
+      .message.user .bubble {
+        background: var(--panel-user);
+        border-top-right-radius: 12px;
+      }
+
+      .generated-image {
+        display: block;
+        width: 100%;
+        max-width: 100%;
+        height: auto;
+        margin-top: 12px;
+        border-radius: 20px;
+        object-fit: contain;
+      }
+
+      .assistant-card-title {
+        display: block;
+        margin-bottom: 8px;
+        font-size: 15px;
+        font-weight: 700;
+      }
+
+      .assistant-status-head {
+        display: inline-flex;
+        align-items: center;
+        gap: 10px;
+        margin-bottom: 8px;
+      }
+
+      .assistant-runtime,
+      .message-runtime {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        font-size: 12px;
+        color: var(--muted);
+        letter-spacing: 0.01em;
+      }
+
+      .assistant-runtime {
+        margin-top: 2px;
+      }
+
+      .message-runtime {
+        margin-top: 6px;
+        padding-left: 6px;
+      }
+
+      .status-spinner {
+        width: 16px;
+        height: 16px;
+        border-radius: 999px;
+        border: 2px solid rgba(32, 33, 35, 0.16);
+        border-top-color: #111111;
+        animation: drawagent-spin 0.85s linear infinite;
+      }
+
+      @keyframes drawagent-spin {
+        from {
+          transform: rotate(0deg);
+        }
+
+        to {
+          transform: rotate(360deg);
+        }
+      }
+
+      .preview-panel {
+        margin-top: 12px;
+        padding: 14px 16px;
+        border-radius: 20px;
+        background: rgba(255, 255, 255, 0.75);
+        border: 1px solid rgba(32, 33, 35, 0.05);
+      }
+
+      .preview-panel strong {
+        color: #111111;
+      }
+
+      .composer-area {
+        position: sticky;
+        bottom: 0;
+        z-index: 15;
+        padding: 16px 0 22px;
+        background:
+          linear-gradient(
+            180deg,
+            rgba(255, 255, 255, 0) 0%,
+            rgba(255, 255, 255, 0.92) 34%,
+            rgba(255, 255, 255, 1) 100%
+          );
+      }
+
+      .thread-shell.is-idle .composer-area {
+        position: static;
+        padding: 0;
+        background: transparent;
+      }
+
+      .composer-wrap {
+        display: flex;
+        flex-direction: column;
+        gap: 0;
+      }
+
+      .thread-shell.is-idle .composer-wrap {
+        width: min(980px, calc(100vw - 40px));
+        max-width: 920px;
+      }
+
+      .selected-files {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+        min-height: 0;
+      }
+
+      .file-card {
+        position: relative;
+        display: grid;
+        grid-template-columns: 34px minmax(0, 1fr) 24px;
+        align-items: center;
+        gap: 8px;
+        width: min(280px, 100%);
+        padding: 8px 10px;
+        border-radius: 16px;
+        background: #ffffff;
+        border: 1px solid rgba(32, 33, 35, 0.1);
+        box-shadow: 0 6px 14px rgba(15, 23, 42, 0.04);
+      }
+
+      .file-card-icon {
+        width: 34px;
+        height: 34px;
+        border-radius: 11px;
+        display: grid;
+        place-items: center;
+        background: linear-gradient(135deg, #ff3b30 0%, #ff5449 100%);
+        color: #ffffff;
+        font-size: 9px;
+        font-weight: 800;
+        letter-spacing: 0.04em;
+      }
+
+      .file-card-icon-svg,
+      .bubble-attachment-icon-svg {
+        width: 14px;
+        height: 14px;
+      }
+
+      .file-card-body {
+        min-width: 0;
+      }
+
+      .file-card-title {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        font-size: 12px;
+        font-weight: 700;
+        color: #202123;
+      }
+
+      .file-card-meta {
+        margin-top: 2px;
+        font-size: 10px;
+        color: #8e8ea0;
+      }
+
+      .file-card-remove {
+        width: 24px;
+        height: 24px;
+        border: 0;
+        border-radius: 999px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        background: #111111;
+        color: #ffffff;
+        cursor: pointer;
+        font-size: 12px;
+        line-height: 1;
+      }
+
+      .file-card-remove:hover {
+        background: #262626;
+      }
+
+      .composer {
+        display: grid;
+        grid-template-columns: auto 1fr auto;
+        align-items: end;
+        gap: 0;
+        padding: 12px 14px;
+        border-radius: 28px;
+        background: var(--panel);
+        border: 1px solid var(--line);
+        box-shadow: var(--shadow);
+      }
+
+      .composer-side {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+      }
+
+      .icon-btn,
+      .send-btn {
+        width: 42px;
+        height: 42px;
+        border-radius: 999px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        border: 1px solid var(--line);
+        background: #ffffff;
+        color: var(--text);
+        cursor: pointer;
+      }
+
+      .file-picker-stack {
+        display: flex;
+        align-items: center;
+        justify-content: flex-end;
+        min-height: 100%;
+      }
+
+      .file-picker-trigger {
+        width: 42px;
+        height: 42px;
+        border-radius: 999px;
+        border: 1px solid var(--line);
+        background: #ffffff;
+        color: #202123;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        cursor: pointer;
+      }
+
+      .file-picker-input {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        opacity: 0;
+        pointer-events: none;
+      }
+
+      .file-upload-btn {
+        display: none;
+      }
+
+      .picker-inline-status {
+        display: none;
+      }
+
+      .file-count-chip {
+        display: none;
+      }
+
+      .file-import-status {
+        display: none;
+      }
+
+      .send-btn {
+        border-color: #111111;
+        background: #111111;
+        color: #ffffff;
+      }
+
+      .send-btn.is-stop {
+        border-color: rgba(32, 33, 35, 0.12);
+        background: #ffffff;
+        color: #111111;
+        width: auto;
+        min-width: 72px;
+        padding: 0 16px;
+      }
+
+      .composer-main {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        min-width: 0;
+      }
+
+      .composer-main textarea {
+        width: 100%;
+        min-height: 44px;
+        max-height: 220px;
+        resize: none;
+        overflow-y: hidden;
+        border: 0;
+        outline: none;
+        background: transparent;
+        color: var(--text);
+        line-height: 1.55;
+        font-size: 15px;
+      }
+
+      .composer-actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+      }
+
+      .action-pill {
+        min-height: 34px;
+        padding: 0 11px;
+        border-radius: 999px;
+        border: 1px solid var(--line);
+        background: #f7f7f8;
+        color: #4b5563;
+        cursor: pointer;
+        font-size: 13px;
+      }
+
+      .action-pill.primary {
+        background: #111111;
+        border-color: #111111;
+        color: #ffffff;
+      }
+
+      .session-meta {
+        display: none;
+      }
+
+      .hidden-status-sink {
+        display: none;
+      }
+
+      .bubble-attachments {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+      }
+
+      .message.user .bubble-attachments {
+        align-items: flex-end;
+      }
+
+      .bubble-attachment {
+        display: grid;
+        grid-template-columns: 26px minmax(0, 1fr);
+        align-items: center;
+        gap: 10px;
+        width: min(420px, 100%);
+        max-width: 100%;
+        padding: 10px 12px;
+        border-radius: 18px;
+        border: 1px solid rgba(32, 33, 35, 0.08);
+        background: #ffffff;
+        box-shadow: 0 6px 14px rgba(15, 23, 42, 0.04);
+      }
+
+      .bubble-attachment-icon {
+        width: 26px;
+        height: 26px;
+        border-radius: 9px;
+        display: grid;
+        place-items: center;
+        background: linear-gradient(135deg, #ff3b30 0%, #ff5449 100%);
+        color: #ffffff;
+      }
+
+      .bubble-attachment-title {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        font-size: 12px;
+        font-weight: 700;
+      }
+
+      .bubble-attachment-meta {
+        margin-top: 2px;
+        font-size: 10px;
+        color: var(--muted);
+      }
+
+      .prompt-action-floating {
+        position: absolute;
+        right: 16px;
+        bottom: 10px;
+        display: flex;
+        align-items: center;
+      }
+
+      .prompt-action-btn {
+        min-height: 40px;
+        padding: 0 15px;
+        border-radius: 999px;
+        border: 1px solid rgba(32, 33, 35, 0.08);
+        background: rgba(255, 255, 255, 0.98);
+        color: #111111;
+        cursor: pointer;
+        font-size: 13px;
+        font-weight: 700;
+        white-space: nowrap;
+        box-shadow: 0 10px 28px rgba(15, 23, 42, 0.08);
+        transition:
+          transform 0.18s ease,
+          box-shadow 0.18s ease,
+          background 0.18s ease;
+      }
+
+      .prompt-action-btn:hover:not(:disabled) {
+        transform: translateY(-1px);
+        box-shadow: 0 16px 34px rgba(15, 23, 42, 0.12);
+        background: #ffffff;
+      }
+
+      .prompt-action-btn:disabled,
+      .prompt-action-btn.is-loading {
+        cursor: not-allowed;
+        opacity: 0.72;
+      }
+
+      .prompt-action-btn.is-loading {
+        position: relative;
+        padding-right: 38px;
+      }
+
+      .prompt-action-btn.is-loading::after {
+        content: "";
+        position: absolute;
+        right: 14px;
+        top: 50%;
+        width: 14px;
+        height: 14px;
+        margin-top: -7px;
+        border-radius: 999px;
+        border: 2px solid rgba(17, 17, 17, 0.18);
+        border-top-color: #111111;
+        animation: drawagent-spin 0.85s linear infinite;
+      }
+
+      #confirm-image-btn {
+        display: none;
+      }
+
+      .tool-btn:disabled,
+      .action-pill:disabled,
+      .send-btn:disabled {
+        opacity: 0.45;
+        cursor: not-allowed;
+      }
+
+      .idle-hint {
+        display: none;
+      }
+
+      .thread-shell.is-idle .idle-hint {
+        display: block;
+        text-align: center;
+        margin-bottom: 10px;
+      }
+
+      .idle-hint-title {
+        font-size: clamp(28px, 4vw, 42px);
+        font-weight: 700;
+        letter-spacing: -0.03em;
+      }
+
+      .idle-hint-copy {
+        margin-top: 10px;
+        color: var(--muted);
+        font-size: 14px;
+      }
+
+      @media (max-width: 900px) {
+        .header-inner,
+        .thread,
+        .composer-wrap {
+          width: min(100vw - 24px, 1180px);
+        }
+
+        .header-inner {
+          height: auto;
+          padding: 12px 0;
+          flex-direction: column;
+          align-items: stretch;
+        }
+
+        .header-actions {
+          width: 100%;
+        }
+
+        .header-actions > * {
+          flex: 1;
+        }
+
+        .message.user .message-body,
+        .message.agent .message-body {
+          max-width: calc(100% - 44px);
+        }
+
+        .message.agent .message-body.has-prompt-action {
+          padding-right: 0;
+          padding-bottom: 48px;
+        }
+
+        .prompt-action-floating {
+          bottom: 0;
+          right: 8px;
+          left: auto;
+        }
+
+        .composer {
+          grid-template-columns: 1fr;
+        }
+
+        .composer-side {
+          justify-content: space-between;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="app-shell">
+      <header class="app-header">
+        <div class="header-inner">
+          <div class="brand">
+            <div class="brand-mark">DA</div>
+            <div>
+              <div class="brand-title">drawAgent</div>
+              <div class="brand-subtitle">Prompt first, then confirmed image generation</div>
+            </div>
+          </div>
+          <div class="header-actions">
+            <button class="tool-btn" id="refresh-workflow-btn">&#26597;&#30475;&#24037;&#20316;&#27969;</button>
+            <button class="tool-btn" id="load-agents-btn">&#26597;&#30475; Agents</button>
+          </div>
+        </div>
+      </header>
+
+      <div class="thread-shell is-idle" id="thread-shell">
+        <main class="thread" id="chat-thread"></main>
+
+        <div class="composer-area">
+          <div class="composer-wrap">
+            <div class="idle-hint">
+              <div class="idle-hint-title">drawAgent</div>
+              <div class="idle-hint-copy">
+                &#20808;&#23548;&#20837;&#35770;&#25991;&#25110;&#21457;&#36865;&#20320;&#30340;&#32472;&#22270;&#38656;&#27714;&#65292;&#28982;&#21518;&#25105;&#20204;&#20877;&#36827;&#20837; Prompt First &#24037;&#20316;&#27969;&#12290;
+              </div>
+            </div>
+
+            <div class="composer">
+              <div class="composer-side">
+                <form
+                  class="file-picker-stack"
+                  id="file-upload-form"
+                  action="/session/upload-files-form"
+                  method="post"
+                  enctype="multipart/form-data"
+                  target="upload-target-frame"
+                >
+                  <input id="upload-batch-id" name="upload_batch_id" type="hidden" value="" />
+                  <label class="file-picker-trigger" for="file-input" aria-label="娣诲姞闄勪欢" title="娣诲姞闄勪欢">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+                      <path d="M12 5v14"></path>
+                      <path d="M5 12h14"></path>
+                    </svg>
+                  </label>
+                  <input
+                    id="file-input"
+                    class="file-picker-input"
+                    name="files"
+                    type="file"
+                    multiple
+                    onchange="window.drawAgentNativeSelect && window.drawAgentNativeSelect(this)"
+                    accept=".pdf,.doc,.docx,.md,.txt"
+                    aria-label="&#28155;&#21152;&#35770;&#25991;&#25110; PDF"
+                  />
+                  <button class="file-upload-btn" id="file-upload-submit" type="submit">
+                    &#19978;&#20256;&#38468;&#20214;
+                  </button>
+                  <div class="picker-inline-status" id="picker-inline-status"></div>
+                  <span class="file-count-chip is-empty" id="file-count-chip"></span>
+                </form>
+              </div>
+
+              <div class="composer-main">
+                <div class="selected-files" id="selected-files"></div>
+                <div class="file-import-status is-empty" id="file-import-status"></div>
+                <textarea
+                  id="prompt-input"
+                  placeholder="&#26377;&#38382;&#39064;&#23613;&#31649;&#38382;&#65292;&#25110;&#32773;&#30452;&#25509;&#25551;&#36848;&#20320;&#24819;&#29983;&#25104;&#30340;&#35770;&#25991;&#26694;&#26550;&#22270;&#12290;"
+                ></textarea>
+
+                <div class="composer-actions">
+                  <button class="action-pill" id="fill-demo-btn">&#22635;&#20837;&#31034;&#20363;&#35831;&#27714;</button>
+                  <button class="action-pill" id="workflow-summary-btn">&#24037;&#20316;&#27969;&#25688;&#35201;</button>
+                  <button class="action-pill primary" id="generate-prompt-btn">&#29983;&#25104; Prompt</button>
+                  <button class="action-pill" id="confirm-image-btn" disabled>&#23436;&#32654;&#65292;&#32487;&#32493;</button>
+                </div>
+              </div>
+
+              <div class="composer-side" style="justify-content: flex-end;">
+                <button class="send-btn" id="send-btn" title="&#21457;&#36865;">&#8593;</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="hidden-status-sink" aria-hidden="true">
+      <span id="workflow-state-count">-</span>
+      <span id="agent-count">-</span>
+      <span id="backend-file-status">鏈彁锟?/span>
+      <span id="checkpoint-badge">鏈敓锟?/span>
+      <span id="thread-status">绛夊緟鍙戣捣</span>
+    </div>
+
+    <iframe name="upload-target-frame" id="upload-target-frame" hidden></iframe>
+    <script>
+      (function () {
+        function updateInlineStatus() {
+          var inlineStatus = document.getElementById("picker-inline-status");
+          if (!inlineStatus) return;
+          inlineStatus.textContent = "";
+          inlineStatus.classList.remove("is-ready");
+        }
+
+        function bindInlineStatus() {
+          var input = document.getElementById("file-input");
+          if (!input) return;
+          input.addEventListener("change", updateInlineStatus);
+          input.addEventListener("input", updateInlineStatus);
+          input.addEventListener("blur", updateInlineStatus);
+        }
+
+        if (document.readyState === "loading") {
+          document.addEventListener("DOMContentLoaded", bindInlineStatus);
+        } else {
+          bindInlineStatus();
+        }
+      })();
+    </script>
+    <script src="/static/app.js?v=20260420-appjs-fix-4"></script>
+  </body>
+</html>
+

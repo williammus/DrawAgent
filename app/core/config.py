@@ -92,6 +92,11 @@ class AppConfig:
             base_url_envs.extend(["REVIEWER_BASE_URL", "REVIEW_BASE_URL"])
             api_key_envs.extend(["REVIEWER_API_KEY", "REVIEW_API_KEY"])
             api_mode_envs.extend(["REVIEWER_API_MODE", "REVIEW_API_MODE"])
+        else:
+            model_envs.append("WORKER_MODEL")
+            base_url_envs.append("WORKER_BASE_URL")
+            api_key_envs.append("WORKER_API_KEY")
+            api_mode_envs.append("WORKER_API_MODE")
 
         model = self._resolve_env_chain(model_envs + ["LLM_MODEL"], "gpt-4o-mini")
         base_url = self._resolve_env_chain(base_url_envs + ["LLM_BASE_URL"], "")
@@ -130,6 +135,10 @@ class AppConfig:
     @property
     def prompt_manifest_path(self) -> Path:
         return self.root_dir / "config" / "prompt_manifest.yaml"
+
+    @property
+    def agent_registry_path(self) -> Path:
+        return self.root_dir / "config" / "agent_registry.yaml"
 
     @property
     def controller_model(self) -> str:
@@ -183,6 +192,27 @@ class AppConfig:
         return int(self.raw.get("runtime", {}).get("max_review_rounds", 3))
 
     @property
+    def max_concurrent_virtual_tasks(self) -> int:
+        raw = self.env(
+            "MAX_CONCURRENT_VIRTUAL_TASKS",
+            str(self.raw.get("runtime", {}).get("max_concurrent_virtual_tasks", 2)),
+        )
+        try:
+            return max(1, int(raw))
+        except ValueError:
+            return 2
+
+    @property
+    def max_review_failure_policy(self) -> str:
+        raw = self.env(
+            "MAX_REVIEW_FAILURE_POLICY",
+            str(self.raw.get("runtime", {}).get("max_review_failure_policy", "release_with_warning")),
+        ).lower()
+        if raw in {"fail", "hard_fail", "release_with_warning"}:
+            return raw
+        return "release_with_warning"
+
+    @property
     def default_skill(self) -> str:
         return str(self.raw.get("skills", {}).get("default_skill", "scientific_diagram"))
 
@@ -216,3 +246,11 @@ class AppConfig:
     def review_mcp_timeout_seconds(self) -> float:
         env_name = str(self.raw["mcp"]["review"]["timeout_seconds_env"])
         return float(self.env(env_name, "120") or "120")
+
+    @property
+    def review_mcp_pool_size(self) -> int:
+        raw = self.env("REVIEW_MCP_POOL_SIZE", str(self.max_concurrent_virtual_tasks))
+        try:
+            return max(1, int(raw))
+        except ValueError:
+            return max(1, self.max_concurrent_virtual_tasks)

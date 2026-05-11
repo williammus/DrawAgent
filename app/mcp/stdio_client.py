@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import queue
 import subprocess
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -21,8 +23,17 @@ class MCPStdIOClient:
         self.timeout_seconds = timeout_seconds
         self._process: subprocess.Popen | None = None
         self._request_id = 0
+        self._stderr_thread: threading.Thread | None = None
 
     def __enter__(self) -> "MCPStdIOClient":
+        return self.start()
+
+    def __exit__(self, exc_type, exc, tb) -> None:
+        self.close()
+
+    def start(self) -> "MCPStdIOClient":
+        if self.is_running():
+            return self
         self._process = subprocess.Popen(
             [self.command, *self.args],
             cwd=str(self.cwd),
@@ -30,12 +41,43 @@ class MCPStdIOClient:
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
         )
+        self._start_stderr_drain()
         self.initialize()
         return self
 
-    def __exit__(self, exc_type, exc, tb) -> None:
+    def close(self) -> None:
         if self._process and self._process.poll() is None:
             self._process.terminate()
+            try:
+                self._process.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                self._process.kill()
+        self._process = None
+
+    def restart(self) -> "MCPStdIOClient":
+        self.close()
+        return self.start()
+
+    def is_running(self) -> bool:
+        return bool(self._process and self._process.poll() is None)
+
+    def _start_stderr_drain(self) -> None:
+        if not self._process or not self._process.stderr:
+            return
+
+        def drain() -> None:
+            try:
+                for _line in self._process.stderr:
+                    pass
+            except ValueError:
+                pass
+
+        self._stderr_thread = threading.Thread(
+            target=drain,
+            name="drawagent-mcp-stderr-drain",
+            daemon=True,
+        )
+        self._stderr_thread.start()
 
     def _write_message(self, payload: dict[str, Any]) -> None:
         if not self._process or not self._process.stdin:
@@ -46,7 +88,7 @@ class MCPStdIOClient:
         self._process.stdin.write(body)
         self._process.stdin.flush()
 
-    def _read_message(self) -> dict[str, Any]:
+    def _read_message_blocking(self) -> dict[str, Any]:
         if not self._process or not self._process.stdout:
             raise RuntimeError("MCP process is not running.")
         headers: dict[str, str] = {}
@@ -63,6 +105,35 @@ class MCPStdIOClient:
             raise RuntimeError("Invalid MCP message content length.")
         body = self._process.stdout.read(content_length)
         return json.loads(body.decode("utf-8"))
+
+    def _read_message(self) -> dict[str, Any]:
+        results: queue.Queue[dict[str, Any] | BaseException] = queue.Queue(maxsize=1)
+
+        def reader() -> None:
+            try:
+                results.put(self._read_message_blocking())
+            except BaseException as exc:
+                results.put(exc)
+
+        thread = threading.Thread(target=reader, daemon=True)
+        thread.start()
+        try:
+            result = results.get(timeout=self.timeout_seconds)
+        except queue.Empty as exc:
+            self._kill_process()
+            raise TimeoutError(f"MCP response timed out after {self.timeout_seconds} seconds.") from exc
+        if isinstance(result, BaseException):
+            raise result
+        return result
+
+    def _kill_process(self) -> None:
+        if not self._process or self._process.poll() is not None:
+            return
+        self._process.kill()
+        try:
+            self._process.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            pass
 
     def _request(self, method: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
         self._request_id += 1
@@ -115,4 +186,3 @@ class MCPStdIOClient:
         if content and isinstance(content[0], dict) and content[0].get("text"):
             return json.loads(str(content[0]["text"]))
         raise RuntimeError("MCP tool call did not return structured content.")
-

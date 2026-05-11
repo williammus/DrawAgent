@@ -7,13 +7,14 @@ from langchain_core.tools import tool
 
 from app.core.config import AppConfig
 from app.mcp.stdio_client import MCPStdIOClient
-from app.tools.contracts import FinalToolArgs, ImageToolArgs, LogicToolArgs, MapperToolArgs, StyleToolArgs
+from app.tools.contracts import FinalToolArgs, GenericToolArgs, ImageToolArgs, LogicToolArgs, MapperToolArgs, StyleToolArgs
 from app.tools.normalizers import (
     normalize_final_artifact,
     normalize_image_artifact,
     normalize_logic_artifact,
     normalize_mapper_artifact,
     normalize_style_artifact,
+    normalize_text_artifact,
 )
 
 ROOT_DIR = Path(__file__).resolve().parents[2]
@@ -68,6 +69,16 @@ def submit_summary_artifact(artifact, summary: str = "") -> dict:
         "summary": summary,
     }
     return _call_worker_mcp_tool("submit_summary_artifact", payload)
+
+
+@tool("submit_generic_artifact", args_schema=GenericToolArgs)
+def submit_generic_artifact(artifact, summary: str = "") -> dict:
+    """Submit a generic text artifact for a skill-defined virtual stage."""
+    payload = {
+        "artifact": normalize_text_artifact(artifact),
+        "summary": summary,
+    }
+    return _call_worker_mcp_tool("submit_generic_artifact", payload)
 
 
 @tool("submit_image_artifact", args_schema=ImageToolArgs)

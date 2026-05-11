@@ -1,0 +1,10 @@
+.env
+.idea/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+runtime/uploads/
+runtime/outputs/
+runtime/artifacts/checkpoints/
+runtime/artifacts/jobs/
+runtime/artifacts/sessions/

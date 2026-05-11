@@ -25,20 +25,22 @@ class DocumentIngestionService:
                 continue
         raise UnicodeDecodeError("unknown", b"", 0, 1, "No supported encoding succeeded.")
 
-    def _read_pdf(self, path: Path) -> tuple[str, int, str]:
+    def _read_pdf(self, path: Path) -> tuple[str, int, str, str]:
         try:
             from pypdf import PdfReader  # type: ignore
+        except ImportError:
+            return "", 0, "pypdf_unavailable", "PDF parsing requires the pypdf package."
 
+        try:
             reader = PdfReader(str(path))
             pages: list[str] = []
             for page in reader.pages:
                 pages.append(page.extract_text() or "")
-            return _normalize_text("\n\n".join(pages)), len(reader.pages), "pypdf"
-        except Exception:
-            raw = path.read_bytes()
-            fallback = raw.decode("latin-1", errors="ignore")
-            fallback = re.sub(r"[^\x20-\x7E\n]+", " ", fallback)
-            return _normalize_text(fallback), 0, "lightweight_pdf_fallback"
+            text = _normalize_text("\n\n".join(pages))
+            warning = "" if text else "PDF parsed successfully, but no extractable text was found."
+            return text, len(reader.pages), "pypdf", warning
+        except Exception as exc:
+            return "", 0, "pypdf_failed", f"PDF parsing failed: {exc}"
 
     def _read_docx(self, path: Path) -> str:
         with zipfile.ZipFile(path, "r") as archive:
@@ -77,12 +79,14 @@ class DocumentIngestionService:
             }
             try:
                 if extension == ".pdf":
-                    text, page_count, parser = self._read_pdf(path)
+                    text, page_count, parser, warning = self._read_pdf(path)
                     file_record["parser"] = parser
                     file_record["page_count"] = page_count
                     if text:
                         file_record["status"] = "parsed"
                         file_record["extracted_text"] = text
+                    if warning:
+                        file_record["warnings"].append(warning)
                 elif extension in {".md", ".txt"}:
                     text = self._read_text_file(path)
                     file_record["parser"] = "direct_text"

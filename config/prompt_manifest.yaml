@@ -14,7 +14,9 @@ agents:
   summarization:
     file: ./prompts/agents/summarization.md
     description: Virtual worker prompt for generating final English image prompt.
+  generic_virtual_agent:
+    file: ./prompts/agents/generic_virtual_agent.md
+    description: Generic virtual worker prompt for skill-defined stages.
   reviewer:
     file: ./prompts/agents/reviewer.md
     description: Review prompt used by the MCP review server.
-

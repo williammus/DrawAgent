@@ -1,0 +1,4 @@
+{"event_id": "d8fad88a-ee88-44ab-afc0-b790db38d5a2", "ts": "2026-05-10T16:49:05.423929+00:00", "event_type": "workflow.started", "session_id": "972d9c89-0287-4da3-a32e-54c6ad084871", "has_document": true, "user_input_chars": 0}
+{"event_id": "a075a277-e4c2-446b-bcc5-1b9984e75093", "ts": "2026-05-10T16:49:19.454664+00:00", "event_type": "workflow.finished", "session_id": "972d9c89-0287-4da3-a32e-54c6ad084871", "stage": "clarification_needed", "selected_skill": "document_ingestion_routing"}
+{"event_id": "c365603f-fb8c-4677-b768-e4c4a85993c4", "ts": "2026-05-10T16:50:10.374365+00:00", "event_type": "workflow.started", "session_id": "972d9c89-0287-4da3-a32e-54c6ad084871", "has_document": false, "user_input_chars": 18}
+{"event_id": "29ec58c1-e38b-48af-b3c4-4e4363cbca91", "ts": "2026-05-10T16:50:27.274459+00:00", "event_type": "workflow.finished", "session_id": "972d9c89-0287-4da3-a32e-54c6ad084871", "stage": "clarification_needed", "selected_skill": "scientific_diagram"}

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Any
 
@@ -11,6 +12,8 @@ class CheckpointStore:
         self.root_dir.mkdir(parents=True, exist_ok=True)
 
     def _path(self, checkpoint_id: str) -> Path:
+        if not re.fullmatch(r"[A-Za-z0-9_-]{1,256}", checkpoint_id):
+            raise ValueError("Invalid checkpoint id.")
         return self.root_dir / f"{checkpoint_id}.json"
 
     def save(self, checkpoint_id: str, payload: dict[str, Any]) -> str:
@@ -23,4 +26,3 @@ class CheckpointStore:
         path = self._path(checkpoint_id)
         with path.open("r", encoding="utf-8") as handle:
             return json.load(handle)
-

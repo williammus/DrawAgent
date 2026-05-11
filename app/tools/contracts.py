@@ -52,13 +52,7 @@ class ArtifactToolArgsBase(StrictArgsModel):
         return data
 
 
-WorkerTaskType = Literal[
-    "logic_extraction",
-    "style_extraction",
-    "visual_mapping",
-    "summarization",
-    "image_generation",
-]
+WorkerTaskType = str
 
 
 class SelectSkillArgs(StrictArgsModel):
@@ -69,6 +63,8 @@ class SelectSkillArgs(StrictArgsModel):
 class RouteSkillDecisionArgs(StrictArgsModel):
     action: Literal["select_skill", "request_clarification"]
     skill_name: str = ""
+    target_skill: str = ""
+    detected_intent: str = ""
     question: str = ""
     reason: str
     primary_discipline: str = ""
@@ -119,6 +115,10 @@ class FinalToolArgs(ArtifactToolArgsBase):
     artifact: str = ""
 
 
+class GenericToolArgs(ArtifactToolArgsBase):
+    artifact: str = ""
+
+
 class ImageToolArgs(ArtifactToolArgsBase):
     artifact: ImageArtifactEnvelope | ImageArtifactValue = Field(default_factory=ImageArtifactValue)
 
@@ -140,6 +140,25 @@ class ReviewRequestArgs(StrictArgsModel):
 
 class RunVirtualAgentArgs(StrictArgsModel):
     agent_type: WorkerTaskType
+    session_id: str = ""
+    agent_name: str = ""
+    prompt_name: str = ""
+    model_role: str = ""
+    output_contract: str = ""
+    stage_goal: str = ""
+    stage_role: str = ""
+    input_refs: list[str] = Field(default_factory=list)
+    allowed_input_refs: list[str] = Field(default_factory=list)
+    resolved_inputs: dict[str, Any] = Field(default_factory=dict)
+    input_manifest: dict[str, Any] = Field(default_factory=dict)
+    artifact_refs: dict[str, Any] = Field(default_factory=dict)
+    artifact_channels: list[str] = Field(default_factory=list)
+    artifact_channel_sources: dict[str, Any] = Field(default_factory=dict)
+    dedupe_artifact_inputs: bool = False
+    stage_outputs: dict[str, Any] = Field(default_factory=dict)
+    input_payload: dict[str, Any] = Field(default_factory=dict)
+    temperature: float | None = None
+    max_tokens: int | None = None
     user_input: str = ""
     primary_discipline: str = ""
     conference_name: str = ""

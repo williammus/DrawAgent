@@ -8,8 +8,11 @@ from typing import Any, Literal
 from langgraph.graph import END, START, StateGraph
 
 from app.core.logging import debug_event
+from app.core.artifact_store import ArtifactStore
+from app.core.errors import classify_error
 from app.core.message_bus import append_message, pop_next_pending_message
 from app.core.state import WorkflowState
+from app.skills.validator import validate_skill_plan
 from app.tools.controller_tools import (
     dispatch_virtual_task,
     finalize_prompt,
@@ -18,12 +21,15 @@ from app.tools.controller_tools import (
     select_skill,
     trigger_image_generation,
 )
-from app.workflow.task_factory import build_virtual_task, next_skill_stage
+from app.workflow.task_factory import build_virtual_task, ready_skill_stages
+from app.workflow.context_builder import WorkerContextBuilder
+from app.workflow.task_executor import VirtualTaskExecutor
 
 
 class DualNodeWorkflowGraph:
     def __init__(self, runtime) -> None:
         self.runtime = runtime
+        self.context_builder = WorkerContextBuilder(self._artifact_store())
         self.graph = self._build().compile()
 
     def run(self, state: WorkflowState) -> WorkflowState:
@@ -48,6 +54,51 @@ class DualNodeWorkflowGraph:
     @staticmethod
     def _route_from_controller(state: WorkflowState) -> Literal["virtual_worker_node", "end"]:
         return "virtual_worker_node" if state.get("next_hop") == "worker" else "end"
+
+    def _max_concurrent_virtual_tasks(self) -> int:
+        config = getattr(self.runtime, "config", None)
+        return int(getattr(config, "max_concurrent_virtual_tasks", 2) or 2)
+
+    @staticmethod
+    def _current_active_tasks(state: WorkflowState) -> list[dict[str, Any]]:
+        tasks = [deepcopy(item) for item in state.get("active_tasks", []) if item]
+        legacy_task = deepcopy(state.get("active_task") or {})
+        if legacy_task and not any(item.get("task_id") == legacy_task.get("task_id") for item in tasks):
+            tasks.insert(0, legacy_task)
+        return tasks
+
+    @staticmethod
+    def _set_active_tasks(state: WorkflowState, tasks: list[dict[str, Any]]) -> WorkflowState:
+        clean_tasks = [deepcopy(item) for item in tasks if item]
+        state["active_tasks"] = clean_tasks
+        state["active_task"] = clean_tasks[0] if clean_tasks else None
+        return state
+
+    @staticmethod
+    def _is_retryable_worker_error(error_payload: dict[str, Any]) -> bool:
+        code = str(error_payload.get("code") or "")
+        message = str(error_payload.get("message") or "").lower()
+        return (
+            code in {"rate_limited", "timeout", "provider_unavailable"}
+            or "unexpected_eof_while_reading" in message
+            or "too many requests" in message
+            or "bad gateway" in message
+            or "service unavailable" in message
+        )
+
+    @staticmethod
+    def _stage_spec_for_retry(state: WorkflowState, active_task: dict[str, Any], task_type: str) -> dict[str, Any]:
+        stage_spec = next(
+            (item for item in state.get("skill_plan", []) if item.get("stage") == task_type),
+            None,
+        )
+        if stage_spec is not None:
+            return stage_spec
+        return {
+            **active_task,
+            "stage": task_type,
+            "agent_name": active_task.get("agent_name") or task_type,
+        }
 
     @staticmethod
     def _normalize_optional_text(value: Any) -> str:
@@ -139,6 +190,115 @@ class DualNodeWorkflowGraph:
         context = self._current_design_context(state)
         return [key for key, value in context.items() if not value]
 
+    def _skill_exists(self, skill_name: str) -> bool:
+        if not skill_name:
+            return False
+        return any(skill.name == skill_name for skill in self.runtime.skill_repository.list())
+
+    @staticmethod
+    def _routing_features(value: str) -> set[str]:
+        text = str(value or "").lower()
+        features = {
+            token
+            for token in re.findall(r"[a-zA-Z][a-zA-Z0-9_\-]{2,}", text)
+            if token not in {"prompt", "diagram", "figure", "skill", "generate", "create"}
+        }
+        cjk_runs = re.findall(r"[\u4e00-\u9fff]{2,}", text)
+        cjk_stopwords = {"生成", "绘图", "画图", "提示", "提示词", "根据", "请帮", "这个", "一个"}
+        for run in cjk_runs:
+            for size in (2, 3, 4):
+                for index in range(0, max(0, len(run) - size + 1)):
+                    token = run[index : index + size]
+                    if token not in cjk_stopwords:
+                        features.add(token)
+        return features
+
+    def _rank_skill_candidates(self, state: WorkflowState) -> list[dict[str, Any]]:
+        request_text = "\n".join(
+            [
+                str(state.get("user_input", "") or ""),
+                "source_material_available" if self._has_source_material(state) else "",
+            ]
+        )
+        request_features = self._routing_features(request_text)
+        candidates: list[dict[str, Any]] = []
+        for skill in self.runtime.skill_repository.list():
+            if skill.name == "document_ingestion_routing":
+                continue
+            skill_text = f"{skill.name}\n{skill.description}\n{skill.body[:3000]}"
+            skill_features = self._routing_features(skill_text)
+            score = len(request_features & skill_features)
+            name_text = skill.name.replace("_", " ").lower()
+            if name_text and name_text in request_text.lower():
+                score += 8
+            if skill.name.lower() in request_text.lower():
+                score += 8
+            if score <= 0:
+                continue
+            candidates.append(
+                {
+                    "skill_name": skill.name,
+                    "score": score,
+                    "confidence": round(min(1.0, score / max(6, len(request_features) or 1)), 3),
+                    "description": skill.description,
+                }
+            )
+        return sorted(candidates, key=lambda item: (-int(item["score"]), str(item["skill_name"])))
+
+    @staticmethod
+    def _skill_input_refs(skill) -> set[str]:
+        refs: set[str] = set()
+        for stage in skill.plan:
+            refs.update(str(item) for item in stage.get("input_refs", []) or [])
+        return refs
+
+    def _skill_requires_source_material(self, skill) -> bool:
+        refs = self._skill_input_refs(skill)
+        return any(ref.startswith("document.") or ref == "document_context" for ref in refs)
+
+    def _missing_required_user_fields_for_skill(self, skill, state: WorkflowState) -> list[str]:
+        refs = self._skill_input_refs(skill)
+        ref_to_state_key = {
+            "user.primary_discipline": "primary_discipline",
+            "user.conference_name": "conference_name",
+            "user.preferences": "user_preferences",
+        }
+        missing: list[str] = []
+        for ref, state_key in ref_to_state_key.items():
+            if ref in refs and not self._normalize_optional_text(state.get(state_key)):
+                missing.append(state_key)
+        return missing
+
+    def _prepare_selected_skill(
+        self,
+        state: WorkflowState,
+        skill_name: str,
+        *,
+        reason: str,
+        question: str = "",
+        missing_fields: list[str] | None = None,
+    ) -> WorkflowState:
+        skill = self.runtime.skill_repository.get(skill_name)
+        state["selected_skill"] = skill.name
+        state["skill_plan"] = deepcopy(skill.plan)
+        missing = list(missing_fields or self._missing_required_user_fields_for_skill(skill, state))
+        if missing:
+            return self._build_design_clarification_response(
+                state,
+                reason=reason or f"{skill.name} 需要补充进入任务前的用户约束。",
+                question=question,
+                missing_fields=missing,
+            )
+        if self._skill_requires_source_material(skill) and not self._has_source_material(state):
+            return self._build_source_material_clarification_response(
+                state,
+                reason=reason or f"{skill.name} 需要可抽取结构的来源材料。",
+            )
+        state["missing_clarification_fields"] = []
+        state["stage"] = "skill_selected"
+        debug_event("skill_selected", skill_name=skill.name, reason=reason)
+        return state
+
     @staticmethod
     def _clarification_labels() -> dict[str, str]:
         return {
@@ -159,7 +319,7 @@ class DualNodeWorkflowGraph:
         labels = self._clarification_labels()
         requested = [labels.get(item, item) for item in missing_fields]
         question_text = question.strip() if question.strip() else (
-            "开始科研绘图前，还需要你补充 3 项信息：\n"
+            "开始科研绘图前，还需要你补充以下信息；可以一次提供，也可以分多次逐步补充：\n"
             "1. primary_discipline：你的一级学科或大领域\n"
             "2. conference_name：目标期刊或会议名称\n"
             "3. user_preferences：你对图的特殊偏好或限制\n\n"
@@ -186,23 +346,42 @@ class DualNodeWorkflowGraph:
         reason: str,
     ) -> WorkflowState:
         source_status = self._source_material_status(state)
+        selected_skill = str(state.get("selected_skill") or state.get("target_skill") or "")
+        is_scientific = selected_skill == "scientific_diagram"
         if source_status["file_count"] > 0 and source_status["parsed_file_count"] == 0:
-            question_text = (
-                "开始科研绘图前，还需要可用于方法抽取的正文内容。\n"
-                "当前附件虽然已上传，但系统没有解析出可用正文。\n\n"
-                "请任选一种方式继续：\n"
-                "1. 重新上传可解析的 PDF / DOCX / Markdown\n"
-                "2. 直接粘贴论文摘要、方法部分、图注或相关正文原文\n\n"
-                "只有学科、会议和偏好信息，不足以进入 logic_extraction。"
-            )
+            if is_scientific:
+                question_text = (
+                    "开始科研绘图前，还需要可用于逻辑提取的正文内容。\n"
+                    "当前附件虽然已上传，但系统没有解析出可用正文。\n\n"
+                    "请任选一种方式继续；可以分多次补充：\n"
+                    "1. 重新上传可解析的 PDF / DOCX / Markdown\n"
+                    "2. 直接粘贴论文摘要、方法部分、图注或相关正文原文\n\n"
+                    "只有学科、会议和偏好信息，不足以进入 logic_extraction。"
+                )
+            else:
+                question_text = (
+                    "开始执行当前绘图 skill 前，还需要可用于抽取内容结构的来源材料。\n"
+                    "当前附件虽然已上传，但系统没有解析出可用正文。\n\n"
+                    "请任选一种方式继续；可以分多次补充：\n"
+                    "1. 重新上传可解析的 PDF / DOCX / Markdown\n"
+                    "2. 直接粘贴申请书、研究计划、正文片段或其他足够具体的原文材料"
+                )
         else:
-            question_text = (
-                "开始科研绘图前，还需要论文正文或可用于抽取方法结构的原文内容。\n\n"
-                "请任选一种方式补充：\n"
-                "1. 上传论文 PDF / DOCX / Markdown\n"
-                "2. 直接粘贴摘要、方法部分、图注或相关正文\n\n"
-                "当前仅有学科、会议和偏好信息，不足以进入 logic_extraction。"
-            )
+            if is_scientific:
+                question_text = (
+                    "开始科研绘图前，还需要论文正文或可用于抽取方法结构的原文内容。\n\n"
+                    "请任选一种方式补充；可以分多次补充：\n"
+                    "1. 上传论文 PDF / DOCX / Markdown\n"
+                    "2. 直接粘贴摘要、方法部分、图注或相关正文\n\n"
+                    "当前仅有学科、会议和偏好信息，不足以进入 logic_extraction。"
+                )
+            else:
+                question_text = (
+                    "开始执行当前绘图 skill 前，还需要来源材料来抽取内容结构。\n\n"
+                    "请任选一种方式补充；可以分多次补充：\n"
+                    "1. 上传 PDF / DOCX / Markdown\n"
+                    "2. 直接粘贴申请书、项目背景、研究内容、技术路线、创新点或其他具体正文片段"
+                )
         state["stage"] = "clarification_needed"
         state["final_response"] = {
             "chinese_explanation": question_text,
@@ -215,10 +394,31 @@ class DualNodeWorkflowGraph:
         state["next_hop"] = "end"
         return state
 
+    def _stop_if_requested(self, state: WorkflowState) -> WorkflowState | None:
+        session_id = str(state.get("session_id") or "")
+        if not self.runtime.is_stop_requested(session_id):
+            return None
+        state["stop_requested"] = True
+        state["active_task"] = None
+        state["active_tasks"] = []
+        state["active_task_run_ids"] = []
+        state["pending_tasks"] = []
+        state["awaiting_user_confirmation"] = False
+        state["stage"] = "stopped"
+        state["next_hop"] = "end"
+        state["final_response"] = {
+            "chinese_explanation": "本轮流程已停止。可以重新上传附件或重新发起生成。",
+            "stop_requested": True,
+        }
+        debug_event("workflow_stopped", session_id=session_id)
+        return state
+
     def _controller_node(self, state: WorkflowState) -> dict[str, Any]:
         state = deepcopy(state)
         state.setdefault("messages", [])
         state.setdefault("completed_tasks", [])
+        state.setdefault("active_tasks", [])
+        state.setdefault("active_task_run_ids", [])
         state.setdefault("warnings", [])
         state.setdefault("review_history", [])
         state.setdefault("artifacts", {})
@@ -226,62 +426,181 @@ class DualNodeWorkflowGraph:
         state.setdefault("primary_discipline", "")
         state.setdefault("conference_name", "")
         state.setdefault("user_preferences", "")
+        state.setdefault("detected_intent", "")
+        state.setdefault("target_skill", "")
+        state.setdefault("routing_reason", "")
+        state.setdefault("orchestration_plan", {})
+        state.setdefault("awaiting_orchestration_confirmation", False)
+        state.setdefault("orchestration_confirmed", False)
         state.setdefault("missing_clarification_fields", [])
         state = self._apply_design_context(
             state,
             self._extract_design_context_from_text(state.get("user_input", "")),
         )
+        stopped_state = self._stop_if_requested(state)
+        if stopped_state is not None:
+            return stopped_state
 
         if state.get("awaiting_user_confirmation"):
             state["next_hop"] = "end"
             return state
 
-        if state.get("active_task"):
+        if state.get("awaiting_orchestration_confirmation"):
+            state["next_hop"] = "end"
+            return state
+
+        if self._current_active_tasks(state):
             state["next_hop"] = "worker"
             return state
 
-        pending_message, messages = pop_next_pending_message(state.get("messages", []), "controller")
-        state["messages"] = messages
-        if pending_message:
+        handled_message = False
+        while True:
+            pending_message, messages = pop_next_pending_message(state.get("messages", []), "controller")
+            state["messages"] = messages
+            if not pending_message:
+                break
+            handled_message = True
             debug_event("controller_message_received", message_type=pending_message.get("message_type"), task_type=pending_message.get("task_type"))
             state = self._handle_message(state, pending_message)
-            if state.get("active_task"):
-                state["next_hop"] = "worker"
-            elif state.get("awaiting_user_confirmation") or state.get("stage") in {"clarification_needed", "completed", "image_generation_completed", "image_generation_failed", "image_generation_not_implemented"}:
+            if state.get("awaiting_user_confirmation") or state.get("stage") in {"clarification_needed", "completed", "image_generation_completed", "image_generation_failed", "image_generation_not_implemented", "review_failed"}:
                 state["next_hop"] = "end"
-            else:
+                return state
+        if handled_message:
+            if self._current_active_tasks(state):
                 state["next_hop"] = "worker"
+                return state
+            state = self._dispatch_next_pipeline_stage(state)
+            state["next_hop"] = "worker" if self._current_active_tasks(state) else "end"
             return state
 
         if not state.get("selected_skill"):
             state = self._select_skill(state)
-            if state.get("selected_skill") and state.get("stage") != "clarification_needed":
+            if state.get("selected_skill") and state.get("stage") == "skill_selected":
+                if not state.get("orchestration_confirmed"):
+                    return self._build_orchestration_confirmation_response(state)
                 state = self._dispatch_next_pipeline_stage(state)
-                state["next_hop"] = "worker" if state.get("active_task") else "end"
+                state["next_hop"] = "worker" if self._current_active_tasks(state) else "end"
             return state
 
         if state.get("stage") == "image_generation_requested":
             state = self._dispatch_image_generation(state)
-            state["next_hop"] = "worker" if state.get("active_task") else "end"
+            state["next_hop"] = "worker" if self._current_active_tasks(state) else "end"
             return state
 
+        if state.get("selected_skill") and not state.get("orchestration_confirmed") and not state.get("completed_tasks"):
+            return self._build_orchestration_confirmation_response(state)
+
         state = self._dispatch_next_pipeline_stage(state)
-        state["next_hop"] = "worker" if state.get("active_task") else "end"
+        state["next_hop"] = "worker" if self._current_active_tasks(state) else "end"
+        return state
+
+    def _build_orchestration_batches(self, skill_plan: list[dict[str, Any]]) -> list[list[str]]:
+        remaining = {str(stage.get("stage") or "") for stage in skill_plan if stage.get("stage")}
+        dependencies = {
+            str(stage.get("stage") or ""): [str(item) for item in stage.get("depends_on", [])]
+            for stage in skill_plan
+            if stage.get("stage")
+        }
+        completed: set[str] = set()
+        batches: list[list[str]] = []
+        max_parallel = self._max_concurrent_virtual_tasks()
+        while remaining:
+            ready = [
+                stage_name
+                for stage_name in remaining
+                if all(dep in completed for dep in dependencies.get(stage_name, []))
+            ]
+            if not ready:
+                batches.append(sorted(remaining))
+                break
+            ordered_ready = [
+                str(stage.get("stage"))
+                for stage in skill_plan
+                if str(stage.get("stage")) in ready
+            ][:max_parallel]
+            batches.append(ordered_ready)
+            completed.update(ordered_ready)
+            remaining.difference_update(ordered_ready)
+        return batches
+
+    def _build_orchestration_plan(self, state: WorkflowState) -> dict[str, Any]:
+        skill_plan = state.get("skill_plan", []) or []
+        stages = []
+        for stage in skill_plan:
+            stages.append(
+                {
+                    "stage": stage.get("stage", ""),
+                    "agent_name": stage.get("agent_name", stage.get("stage", "")),
+                    "agent_description": stage.get("agent_description", ""),
+                    "prompt_name": stage.get("prompt_name", ""),
+                    "model_role": stage.get("model_role", ""),
+                    "output_contract": stage.get("output_contract", ""),
+                    "stage_role": stage.get("stage_role", ""),
+                    "stage_goal": stage.get("stage_goal", ""),
+                    "depends_on": list(stage.get("depends_on", []) or []),
+                    "input_refs": list(stage.get("input_refs", []) or []),
+                    "allowed_input_refs": list(stage.get("allowed_input_refs", []) or []),
+                    "output_ref": stage.get("output_ref", ""),
+                    "artifact_aliases": list(stage.get("artifact_aliases", []) or []),
+                    "review_required": bool(stage.get("review_required", True)),
+                    "review_phase": stage.get("review_phase", ""),
+                    "trigger": stage.get("trigger", ""),
+                }
+            )
+        return {
+            "selected_skill": state.get("selected_skill", ""),
+            "detected_intent": state.get("detected_intent", ""),
+            "routing_reason": state.get("routing_reason", ""),
+            "max_parallel": self._max_concurrent_virtual_tasks(),
+            "validation": validate_skill_plan(skill_plan),
+            "stages": stages,
+            "batches": self._build_orchestration_batches(skill_plan),
+        }
+
+    def _build_orchestration_confirmation_response(self, state: WorkflowState) -> WorkflowState:
+        plan = self._build_orchestration_plan(state)
+        validation = plan.get("validation", {}) or {}
+        state["orchestration_plan"] = plan
+        state["awaiting_orchestration_confirmation"] = True
+        state["orchestration_confirmed"] = False
+        state["stage"] = "awaiting_orchestration_confirmation"
+        state["next_hop"] = "end"
+        state["final_response"] = {
+            "chinese_explanation": (
+                "已根据当前 skill 生成任务编排结构。请确认后再开始执行虚拟节点。"
+                if validation.get("ok", True)
+                else "已生成任务编排结构，但编排验证未通过，请先修改 skill 描述或编排结构。"
+            ),
+            "selected_skill": state.get("selected_skill", ""),
+            "orchestration_plan": plan,
+            "confirm_action": "confirm_orchestration",
+            "confirm_session_id": state.get("session_id", ""),
+            "can_confirm_orchestration": bool(validation.get("ok", True)),
+        }
+        debug_event(
+            "orchestration_confirmation_required",
+            session_id=state.get("session_id", ""),
+            selected_skill=state.get("selected_skill", ""),
+            stage_count=len(plan.get("stages", [])),
+        )
         return state
 
     def _select_skill(self, state: WorkflowState) -> WorkflowState:
         prompt = self.runtime.prompt_repository.render("controller", {})
+        deterministic_route = self._detect_entry_intent(state)
         user_payload = {
             "mode": "select_skill",
             "user_input": state.get("user_input", ""),
             "document_context_summary": state.get("document_context_summary", {}),
             "available_skills": self.runtime.describe_skills(),
+            "routing_skill": "document_ingestion_routing",
+            "deterministic_route_hint": deterministic_route,
             "design_context": self._current_design_context(state),
-            "required_user_fields_for_scientific_diagram": [
-                "primary_discipline",
-                "conference_name",
-                "user_preferences",
-            ],
+            "source_material_status": self._source_material_status(state),
+            "selection_policy": (
+                "Select the best concrete skill from available_skills by reading each skill description, "
+                "body_excerpt, and plan_preview. deterministic_route_hint is a local candidate hint, not a hard override."
+            ),
         }
         try:
             result = self.runtime.llm_client.run_tool_call(
@@ -295,18 +614,63 @@ class DualNodeWorkflowGraph:
             tool_result = result["tool_result"]
         except Exception as exc:
             if state.get("document_context", {}).get("file_count", 0) or state.get("user_input", "").strip():
-                tool_result = {
-                    "action": "select_skill",
-                    "skill_name": self.runtime.config.default_skill,
-                    "reason": f"Controller fallback selected default skill due to runtime error: {exc}",
+                tool_result = deterministic_route | {
+                    "reason": f"{deterministic_route.get('reason', '')} Controller fallback used due to runtime error: {exc}",
                 }
             else:
                 tool_result = {
                     "action": "request_clarification",
-                    "question": "请先上传论文或描述你要生成的科研图内容。",
+                    "skill_name": "document_ingestion_routing",
+                    "detected_intent": "clarification_needed",
+                    "target_skill": "",
+                    "question": "请先上传材料，或描述你想把材料生成哪类图或 Prompt。",
                     "reason": f"Controller fallback requested clarification due to runtime error: {exc}",
                 }
+        route_candidates = list(deterministic_route.get("skill_candidates") or [])
+        top_candidate = route_candidates[0] if route_candidates else {}
+        top_skill = str(top_candidate.get("skill_name") or "")
+        selected_skill = str(tool_result.get("skill_name") or tool_result.get("target_skill") or "")
+        if (
+            top_skill
+            and selected_skill
+            and selected_skill != "document_ingestion_routing"
+            and selected_skill != top_skill
+            and self._skill_exists(selected_skill)
+            and int(top_candidate.get("score") or 0) >= 3
+        ):
+            tool_result = {
+                **tool_result,
+                "action": "select_skill",
+                "skill_name": top_skill,
+                "target_skill": top_skill,
+                "detected_intent": "skill_request",
+                "reason": (
+                    f"{tool_result.get('reason', '')} Local skill-catalog match favored {top_skill}; "
+                    "using the catalog-derived candidate instead of an inconsistent model choice."
+                ).strip(),
+            }
         state = self._apply_design_context(state, tool_result)
+        selected_from_tool = str(tool_result.get("skill_name") or "")
+        target_from_tool = str(tool_result.get("target_skill") or "")
+        if selected_from_tool == "document_ingestion_routing" and target_from_tool:
+            state["selected_skill"] = selected_from_tool
+        elif self._skill_exists(selected_from_tool):
+            state["selected_skill"] = selected_from_tool
+            state["target_skill"] = selected_from_tool
+        elif self._skill_exists(target_from_tool):
+            state["selected_skill"] = "document_ingestion_routing"
+            state["target_skill"] = target_from_tool
+        else:
+            state["selected_skill"] = selected_from_tool
+        state["detected_intent"] = str(tool_result.get("detected_intent") or deterministic_route.get("detected_intent") or "")
+        state["target_skill"] = str(state.get("target_skill") or tool_result.get("target_skill") or deterministic_route.get("target_skill") or "")
+        state["routing_reason"] = str(tool_result.get("reason") or deterministic_route.get("reason") or "")
+
+        if state["selected_skill"] == "document_ingestion_routing":
+            routed = self._handle_document_ingestion_route(state, tool_result)
+            if routed is not None:
+                return routed
+
         if tool_result["action"] == "request_clarification":
             return self._build_design_clarification_response(
                 state,
@@ -315,48 +679,188 @@ class DualNodeWorkflowGraph:
                 missing_fields=tool_result.get("missing_fields", []),
             )
 
-        skill = self.runtime.skill_repository.get(tool_result["skill_name"])
-        state["selected_skill"] = skill.name
-        state["skill_plan"] = deepcopy(skill.plan)
-        if skill.name == "scientific_diagram":
-            missing_fields = self._missing_design_context_fields(state)
-            if missing_fields:
-                return self._build_design_clarification_response(
-                    state,
-                    reason="scientific_diagram 在 logic_extraction 前需要用户明确提供学科、目标会议/期刊、以及个人风格偏好。",
-                    missing_fields=missing_fields,
-                )
-            if not self._has_source_material(state):
-                return self._build_source_material_clarification_response(
-                    state,
-                    reason="scientific_diagram 在 logic_extraction 前必须先拿到论文正文、摘要、方法部分或其他可用于抽取结构的原文内容。",
-                )
-            state["missing_clarification_fields"] = []
-        state["stage"] = "skill_selected"
-        debug_event("skill_selected", skill_name=skill.name, reason=tool_result.get("reason", ""))
-        return state
+        chosen_skill = str(state.get("target_skill") or tool_result.get("skill_name") or "")
+        return self._prepare_selected_skill(
+            state,
+            chosen_skill,
+            reason=tool_result.get("reason", ""),
+            question=tool_result.get("question", ""),
+            missing_fields=tool_result.get("missing_fields", []),
+        )
+
+    def _detect_entry_intent(self, state: WorkflowState) -> dict[str, Any]:
+        text = str(state.get("user_input", "") or "").lower()
+        document_context = state.get("document_context", {}) or {}
+        file_count = int(document_context.get("file_count", 0) or 0)
+        parsed_file_count = int(document_context.get("parsed_file_count", 0) or 0)
+        has_source = self._has_source_material(state)
+        skill_candidates = self._rank_skill_candidates(state)
+        top_candidate = skill_candidates[0] if skill_candidates else {}
+        target_skill = str(top_candidate.get("skill_name") or "")
+        route = {
+            "action": "select_skill",
+            "skill_name": "document_ingestion_routing",
+            "target_skill": target_skill,
+            "detected_intent": "clarification_needed",
+            "skill_candidates": skill_candidates[:4],
+            "reason": "入口路由只提供候选 skill，最终由主控根据 available_skills 决定。",
+        }
+        if re.search(r"\b(stop|cancel|abort)\b|停止|取消|终止", text):
+            return route | {
+                "action": "request_clarification",
+                "target_skill": "",
+                "detected_intent": "stop_request",
+                "reason": "用户表达了停止当前流程的意图。",
+            }
+        if re.search(r"修订|修改|调整|优化|继续改|revise|revision|modify|edit", text) and "prompt" in text:
+            return route | {
+                "action": "request_clarification",
+                "target_skill": "",
+                "detected_intent": "prompt_revision_request",
+                "reason": "用户表达了继续修订 Prompt 的意图。",
+            }
+        if re.search(r"开始生图|确认出图|生成图片|出图|confirm|generate image", text):
+            return route | {
+                "action": "request_clarification",
+                "target_skill": "",
+                "detected_intent": "image_confirmation_request",
+                "reason": "用户表达了确认出图的意图。",
+            }
+        if file_count > 0 and parsed_file_count == 0:
+            return route | {
+                "action": "request_clarification",
+                "detected_intent": "document_parse_failed",
+                "reason": "附件已上传但没有解析出可用正文。",
+            }
+        if file_count > 0 and not text.strip():
+            return route | {
+                "action": "request_clarification",
+                "detected_intent": "document_only_upload",
+                "reason": "用户仅上传了文档，还没有说明绘图目标和设计上下文。",
+            }
+        if top_candidate:
+            return route | {
+                "action": "select_skill",
+                "target_skill": str(top_candidate["skill_name"]),
+                "detected_intent": "skill_request",
+                "reason": "本地 skill 描述匹配给出了候选 skill，主控仍需根据 available_skills 自行确认。",
+            }
+        if has_source or re.search(r"绘图|画图|框架图|方法图|科研图|architecture|diagram|figure|prompt", text):
+            return route | {
+                "action": "select_skill",
+                "detected_intent": "skill_request",
+                "reason": "用户请求像绘图或 Prompt 任务，但没有足够明确的 skill 匹配，主控需要选择或澄清。",
+            }
+        return route
+
+    def _handle_document_ingestion_route(
+        self,
+        state: WorkflowState,
+        tool_result: dict[str, Any],
+    ) -> WorkflowState | None:
+        intent = str(state.get("detected_intent") or "")
+        target_skill = str(state.get("target_skill") or "")
+        debug_event(
+            "document_ingestion_routed",
+            detected_intent=intent,
+            target_skill=target_skill,
+            reason=state.get("routing_reason", ""),
+        )
+
+        if intent == "document_parse_failed":
+            return self._build_source_material_clarification_response(
+                state,
+                reason="document_ingestion_routing 识别到附件解析失败，需要重新提供可解析来源材料。",
+            )
+
+        if intent == "document_only_upload":
+            state["stage"] = "clarification_needed"
+            state["final_response"] = {
+                "chinese_explanation": (
+                    "文档已进入系统。请继续说明你想把这份材料变成哪类图或 Prompt；可以用自然语言描述目标。\n\n"
+                    "例如：基于论文生成科研方法图 Prompt；或基于基金申请书生成技术路线图 Prompt。"
+                ),
+                "reason": "document_ingestion_routing 识别到用户只上传了文档，还缺少目标任务。",
+                "missing_fields": ["target_intent"],
+                "collected_values": self._current_design_context(state),
+                "source_material_status": self._source_material_status(state),
+            }
+            state["next_hop"] = "end"
+            return state
+
+        if target_skill and target_skill != "document_ingestion_routing" and self._skill_exists(target_skill):
+            return self._prepare_selected_skill(
+                state,
+                target_skill,
+                reason=tool_result.get("reason", "") or state.get("routing_reason", ""),
+                question=tool_result.get("question", ""),
+                missing_fields=tool_result.get("missing_fields", []),
+            )
+
+        if intent == "prompt_revision_request":
+            state["stage"] = "routing_instruction"
+            state["final_response"] = {
+                "chinese_explanation": "识别到你想继续修订 Prompt。请在已生成 Prompt 的消息下使用“修订 Prompt”按钮，或携带 checkpoint_id 调用修订接口。",
+                "detected_intent": intent,
+                "routing_reason": state.get("routing_reason", ""),
+            }
+            state["next_hop"] = "end"
+            return state
+
+        if intent == "image_confirmation_request":
+            state["stage"] = "routing_instruction"
+            state["final_response"] = {
+                "chinese_explanation": "识别到你想确认出图。请先完成 Prompt 生成并使用对应 checkpoint 的“开始生图”按钮。",
+                "detected_intent": intent,
+                "routing_reason": state.get("routing_reason", ""),
+            }
+            state["next_hop"] = "end"
+            return state
+
+        if intent == "stop_request":
+            state["stage"] = "routing_instruction"
+            state["final_response"] = {
+                "chinese_explanation": "识别到你想停止流程。正在运行的任务请使用停止按钮或 `/session/stop` 接口。",
+                "detected_intent": intent,
+                "routing_reason": state.get("routing_reason", ""),
+            }
+            state["next_hop"] = "end"
+            return state
+
+        if tool_result.get("action") == "request_clarification":
+            return self._build_design_clarification_response(
+                state,
+                reason=tool_result.get("reason", ""),
+                question=tool_result.get("question", ""),
+                missing_fields=tool_result.get("missing_fields", []),
+            )
+        return None
 
     def _dispatch_next_pipeline_stage(self, state: WorkflowState) -> WorkflowState:
-        if state.get("selected_skill") == "scientific_diagram":
-            missing_fields = self._missing_design_context_fields(state)
+        selected_skill_name = str(state.get("selected_skill") or "")
+        if selected_skill_name and self._skill_exists(selected_skill_name):
+            selected_skill = self.runtime.skill_repository.get(selected_skill_name)
+            missing_fields = self._missing_required_user_fields_for_skill(selected_skill, state)
             if missing_fields:
                 return self._build_design_clarification_response(
                     state,
-                    reason="scientific_diagram 在进入后续虚拟节点前需要完整的用户学科、目标会议/期刊和偏好信息。",
+                    reason=f"{selected_skill_name} 在进入后续虚拟节点前仍缺少必要用户约束。",
                     missing_fields=missing_fields,
                 )
-            if not self._has_source_material(state):
+            if self._skill_requires_source_material(selected_skill) and not self._has_source_material(state):
                 return self._build_source_material_clarification_response(
                     state,
-                    reason="scientific_diagram 在进入 logic_extraction 前缺少可抽取方法结构的正文内容。",
+                    reason=f"{selected_skill_name} 在进入虚拟节点前缺少可抽取结构的来源材料。",
                 )
 
-        next_stage = next_skill_stage(
+        ready_stages = ready_skill_stages(
             state.get("skill_plan", []),
             state.get("completed_tasks", []),
+            active_tasks=self._current_active_tasks(state),
             include_image_generation=False,
+            max_parallel=self._max_concurrent_virtual_tasks(),
         )
-        if next_stage is None:
+        if not ready_stages:
             if str(state.get("artifacts", {}).get("payload_final", {}).get("value", "") or "").strip():
                 checkpoint_id, checkpoint_path = self.runtime.save_prompt_checkpoint(state)
                 state["prompt_checkpoint_id"] = checkpoint_id
@@ -365,17 +869,37 @@ class DualNodeWorkflowGraph:
                 state["stage"] = "awaiting_user_confirmation"
                 state["next_hop"] = "end"
             else:
+                stage_outputs = state.get("artifacts", {}).get("stage_outputs", {}) or {}
+                if stage_outputs and not state.get("final_response"):
+                    completed_names = [
+                        str(item.get("task_type") or "")
+                        for item in state.get("completed_tasks", [])
+                        if item.get("task_type")
+                    ]
+                    latest_name = next(
+                        (name for name in reversed(completed_names) if name in stage_outputs),
+                        next(reversed(stage_outputs), ""),
+                    )
+                    latest_artifact = stage_outputs.get(latest_name, {})
+                    state["final_response"] = {
+                        "chinese_explanation": "当前 skill 已完成，结果已写入工作流 artifact，可供后续任务复用。",
+                        "selected_skill": state.get("selected_skill", ""),
+                        "result_stage": latest_name,
+                        "result_artifact": latest_artifact,
+                    }
                 state["stage"] = "completed"
                 state["next_hop"] = "end"
             return state
 
         prompt = self.runtime.prompt_repository.render("controller", {})
         user_payload = {
-            "mode": "dispatch_next_task",
+            "mode": "dispatch_next_task_batch",
             "selected_skill": state.get("selected_skill", ""),
-            "next_stage_candidate": next_stage,
+            "next_stage_candidate": ready_stages[0],
+            "ready_stage_candidates": ready_stages,
             "completed_tasks": state.get("completed_tasks", []),
             "warnings": state.get("warnings", []),
+            "orchestration_rule": "Dispatch every ready stage whose dependencies are already satisfied. Independent stages may run in one virtual-worker batch.",
         }
         try:
             result = self.runtime.llm_client.run_tool_call(
@@ -390,21 +914,42 @@ class DualNodeWorkflowGraph:
         except Exception as exc:
             tool_result = {
                 "action": "dispatch_virtual_task",
-                "task_type": next_stage["stage"],
+                "task_type": ready_stages[0]["stage"],
                 "reason": f"Controller fallback dispatched next stage due to runtime error: {exc}",
                 "revision_mode": False,
                 "release_after_failure": False,
             }
 
-        active_task = build_virtual_task(
-            stage_spec=next_stage,
-            max_retry=self.runtime.config.max_review_rounds,
+        requested_task_type = str(tool_result.get("task_type") or "")
+        if requested_task_type:
+            ordered_stages = [stage for stage in ready_stages if str(stage.get("stage") or "") == requested_task_type]
+            ordered_stages.extend(
+                stage for stage in ready_stages
+                if str(stage.get("stage") or "") != requested_task_type
+            )
+        else:
+            ordered_stages = ready_stages
+
+        active_tasks = [
+            build_virtual_task(
+                stage_spec=stage,
+                max_retry=self.runtime.config.max_review_rounds,
+                revision_mode=bool(tool_result.get("revision_mode", False)),
+            )
+            for stage in ordered_stages
+        ]
+        self._set_active_tasks(state, active_tasks)
+        state["pending_tasks"] = state.get("pending_tasks", []) + active_tasks
+        state["stage"] = (
+            "parallel_virtual_tasks"
+            if len(active_tasks) > 1
+            else active_tasks[0]["task_type"]
+        )
+        debug_event(
+            "task_batch_dispatched",
+            task_types=[task["task_type"] for task in active_tasks],
             revision_mode=bool(tool_result.get("revision_mode", False)),
         )
-        state["active_task"] = active_task
-        state["pending_tasks"] = state.get("pending_tasks", []) + [active_task]
-        state["stage"] = active_task["task_type"]
-        debug_event("task_dispatched", task_type=active_task["task_type"], revision_mode=active_task["revision_mode"])
         return state
 
     def _dispatch_image_generation(self, state: WorkflowState) -> WorkflowState:
@@ -432,18 +977,38 @@ class DualNodeWorkflowGraph:
             "agent_name": "image_generation",
             "review_required": False,
         }
-        state["active_task"] = build_virtual_task(
+        image_task = build_virtual_task(
             stage_spec=stage_spec,
             max_retry=0,
             revision_mode=False,
         )
-        state["pending_tasks"] = state.get("pending_tasks", []) + [state["active_task"]]
+        self._set_active_tasks(state, [image_task])
+        state["pending_tasks"] = state.get("pending_tasks", []) + [image_task]
         return state
 
     def _handle_message(self, state: WorkflowState, message: dict[str, Any]) -> WorkflowState:
         task_type = str(message.get("task_type") or "")
         message_type = str(message.get("message_type") or "")
         payload = message.get("payload") or {}
+
+        if message_type == "fatal_review":
+            review = payload.get("review") or {}
+            state["stage"] = "review_failed"
+            state["error"] = f"{task_type} 收到 fatal 审查信号，流程已停止。"
+            state["final_response"] = {
+                "chinese_explanation": state["error"],
+                "review_status": "fatal",
+                "review_approved": False,
+                "latest_review_feedback": review,
+            }
+            state["next_hop"] = "end"
+            debug_event(
+                "fatal_review_received",
+                task_type=task_type,
+                review_phase=review.get("review_phase", ""),
+                issues=review.get("issues", []),
+            )
+            return state
 
         if message_type == "positive_check":
             debug_event("task_approved", task_type=task_type, stage=state.get("stage", ""))
@@ -472,7 +1037,7 @@ class DualNodeWorkflowGraph:
                     tool_result = {
                         "action": "finalize_prompt",
                         "chinese_explanation": (
-                            "已生成一版可直接用于科研绘图的英文 Prompt，请确认后开始生图。"
+                            "已生成一版可直接用于当前绘图任务的英文 Prompt，请确认后开始生图。"
                             if summary_text
                             else f"Prompt 已生成，请确认后继续。({exc})"
                         ),
@@ -507,7 +1072,7 @@ class DualNodeWorkflowGraph:
                 return state
 
             state["stage"] = f"{task_type}_approved"
-            return self._dispatch_next_pipeline_stage(state)
+            return state
 
         if message_type == "image_generation_failed":
             warning = str(payload.get("warning") or "图片生成失败。")
@@ -530,12 +1095,32 @@ class DualNodeWorkflowGraph:
                 max_retry=(payload.get("task") or {}).get("max_retry", self.runtime.config.max_review_rounds),
                 issues=review.get("issues", []),
             )
-            state["review_history"] = state.get("review_history", []) + [review]
             active_task = payload.get("task") or {}
             retry_count = int(active_task.get("retry_count", 0))
             max_retry = int(active_task.get("max_retry", self.runtime.config.max_review_rounds))
+            is_transient_worker_error = bool(review.get("transient_error"))
 
             if retry_count < max_retry:
+                if is_transient_worker_error:
+                    retry_task = build_virtual_task(
+                        stage_spec=self._stage_spec_for_retry(state, active_task, task_type),
+                        max_retry=max_retry,
+                        retry_count=retry_count + 1,
+                        revision_mode=bool(active_task.get("revision_mode", False)),
+                        revision_context=dict(active_task.get("revision_context") or {}),
+                    )
+                    self._set_active_tasks(state, [retry_task])
+                    state["pending_tasks"] = state.get("pending_tasks", []) + [retry_task]
+                    state["stage"] = f"{task_type}_retrying"
+                    debug_event(
+                        "transient_worker_retry_scheduled",
+                        task_type=task_type,
+                        error_code=review.get("error_code", ""),
+                        next_retry_count=retry_count + 1,
+                        max_retry=max_retry,
+                    )
+                    return state
+
                 prompt = self.runtime.prompt_repository.render("controller", {})
                 try:
                     result = self.runtime.llm_client.run_tool_call(
@@ -572,14 +1157,15 @@ class DualNodeWorkflowGraph:
                         "current_output": payload.get("task_output", {}),
                         "review_feedback": review,
                     }
-                    state["active_task"] = build_virtual_task(
+                    retry_task = build_virtual_task(
                         stage_spec=stage_spec,
                         max_retry=max_retry,
                         retry_count=retry_count + 1,
                         revision_mode=True,
                         revision_context=revision_context,
                     )
-                    state["pending_tasks"] = state.get("pending_tasks", []) + [state["active_task"]]
+                    self._set_active_tasks(state, [retry_task])
+                    state["pending_tasks"] = state.get("pending_tasks", []) + [retry_task]
                     state["stage"] = f"{task_type}_retrying"
                     debug_event(
                         "revision_scheduled",
@@ -587,7 +1173,43 @@ class DualNodeWorkflowGraph:
                         next_retry_count=retry_count + 1,
                         max_retry=max_retry,
                     )
-                    return state
+                return state
+
+            if is_transient_worker_error:
+                state["stage"] = "review_failed"
+                state["error"] = f"{task_type} 因模型服务限流或网络错误超过最大重试次数，流程已停止。"
+                state["final_response"] = {
+                    "chinese_explanation": state["error"],
+                    "review_status": "failed",
+                    "review_approved": False,
+                    "latest_review_feedback": review,
+                }
+                state["next_hop"] = "end"
+                debug_event(
+                    "transient_worker_retry_exhausted",
+                    task_type=task_type,
+                    max_retry=max_retry,
+                    error_code=review.get("error_code", ""),
+                )
+                return state
+
+            if self.runtime.config.max_review_failure_policy in {"fail", "hard_fail"}:
+                state["stage"] = "review_failed"
+                state["error"] = f"{task_type} 超过最大审查轮次，当前结果仍未通过审查，流程已失败。"
+                state["final_response"] = {
+                    "chinese_explanation": state["error"],
+                    "review_status": "failed",
+                    "review_approved": False,
+                    "latest_review_feedback": review,
+                }
+                state["next_hop"] = "end"
+                debug_event(
+                    "max_retry_hard_failed",
+                    task_type=task_type,
+                    max_retry=max_retry,
+                    review_phase=review.get("review_phase", ""),
+                )
+                return state
 
             warning = f"{task_type} 超过最大审查轮次，当前结果未通过审查，已带 warning 放行。"
             state["warnings"] = state.get("warnings", []) + [warning]
@@ -621,14 +1243,20 @@ class DualNodeWorkflowGraph:
                 )
                 return state
 
-            return self._dispatch_next_pipeline_stage(state)
+            state["stage"] = f"{task_type}_released_with_warnings"
+            return state
 
         return state
 
     def _fallback_worker_artifact(self, state: WorkflowState, task: dict[str, Any]) -> dict[str, Any]:
         task_type = str(task["task_type"])
         summary = state.get("document_context_summary", {})
-        excerpt = str(state.get("document_context", {}).get("combined_excerpt", "") or "")
+        document_context = state.get("document_context", {}) or {}
+        excerpt = str(
+            document_context.get("combined_text")
+            or document_context.get("combined_excerpt", "")
+            or ""
+        )
         user_input = str(state.get("user_input", "") or "")
 
         if task_type == "logic_extraction":
@@ -732,102 +1360,118 @@ class DualNodeWorkflowGraph:
             }
         raise RuntimeError(f"Unsupported fallback task type: {task_type}")
 
+    @staticmethod
+    def _stage_outputs(state: WorkflowState) -> dict[str, Any]:
+        return ArtifactStore.stage_outputs(state)
+
+    def _artifact_for_stage_or_alias(
+        self,
+        state: WorkflowState,
+        *,
+        stage_name: str,
+        alias: str,
+    ) -> dict[str, Any]:
+        return self._artifact_store().artifact_for_stage_or_alias(
+            state,
+            stage_name=stage_name,
+            alias=alias,
+        )
+
+    def _resolve_input_ref(self, state: WorkflowState, ref: str) -> Any:
+        return self._artifact_store().resolve_input_ref(state, ref)
+
     def _build_worker_payload(self, state: WorkflowState, task: dict[str, Any]) -> dict[str, Any]:
-        task_type = task["task_type"]
-        payload = {
-            "user_input": state.get("user_input", ""),
-            "primary_discipline": state.get("primary_discipline", ""),
-            "conference_name": state.get("conference_name", ""),
-            "user_preferences": state.get("user_preferences", ""),
-            "document_context_summary": state.get("document_context_summary", {}),
-            "document_excerpt": state.get("document_context", {}).get("combined_excerpt", ""),
-            "payload_logic": state.get("artifacts", {}).get("payload_logic", {}),
-            "payload_style": state.get("artifacts", {}).get("payload_style", {}),
-            "payload_mapper": state.get("artifacts", {}).get("payload_mapper", {}),
-            "source_files": [
-                item.get("name") for item in state.get("document_context", {}).get("files", [])
-            ],
-        }
-        if task.get("revision_mode"):
-            payload["revision_context"] = task.get("revision_context", {})
-        if task_type == "image_generation":
-            payload = {
-                "english_prompt": str(state.get("artifacts", {}).get("payload_final", {}).get("value", "") or ""),
-                "checkpoint_id": state.get("prompt_checkpoint_id", ""),
-                "image_attempt_id": state.get("image_attempt_id", ""),
-            }
-        return payload
+        return self._context_builder().build_worker_payload(state, task)
 
-    def _virtual_worker_node(self, state: WorkflowState) -> dict[str, Any]:
-        state = deepcopy(state)
-        task = deepcopy(state.get("active_task") or {})
-        if not task:
-            state["next_hop"] = "end"
-            return state
+    def _build_review_upstream_artifacts(self, state: WorkflowState, task: dict[str, Any] | str) -> dict[str, Any]:
+        return self._context_builder().build_review_upstream_artifacts(state, task)
 
+    def _build_review_task_input(self, task_input: dict[str, Any]) -> dict[str, Any]:
+        return self._context_builder().build_review_task_input(task_input)
+
+    def _store_task_artifact(
+        self,
+        state: WorkflowState,
+        *,
+        task: dict[str, Any],
+        artifact_ref: str,
+        artifact: dict[str, Any],
+    ) -> None:
+        self._artifact_store().store_task_artifact(
+            state,
+            task=task,
+            artifact_ref=artifact_ref,
+            artifact=artifact,
+        )
+
+    def _run_image_generation_task(self, state: WorkflowState, task: dict[str, Any]) -> dict[str, Any]:
         task_type = str(task["task_type"])
-        debug_event("worker_started", task_type=task_type, retry_count=task.get("retry_count", 0), revision_mode=task.get("revision_mode", False))
-        pending_tasks = [item for item in state.get("pending_tasks", []) if item.get("task_id") != task.get("task_id")]
-        state["pending_tasks"] = pending_tasks
-        state["active_task"] = None
-
-        if task_type == "image_generation":
-            image_warning = ""
-            image_attempt_id = str(state.get("image_attempt_id") or task.get("task_id") or "")
-            try:
-                image_result = self.runtime.image_client.generate_image(
-                    model=self.runtime.config.image_model,
-                    prompt=str(state.get("artifacts", {}).get("payload_final", {}).get("value", "") or ""),
-                    size="1536x1024",
-                    image_attempt_id=image_attempt_id,
-                )
-            except Exception as exc:
-                image_result = {
-                    "image_url": "",
-                    "image_b64": "",
-                    "image_mime_type": "image/png",
-                    "revised_prompt": f"Image generation fallback used: {exc}",
-                    "raw_json": {},
-                    "image_attempt_id": image_attempt_id,
-                }
-                image_warning = f"图片模型未成功返回结果：{exc}"
-                state["warnings"] = state.get("warnings", []) + [image_warning]
-            artifact = {
-                "key": "image_generator",
-                "value": image_result,
+        image_warning = ""
+        image_attempt_id = str(state.get("image_attempt_id") or task.get("task_id") or "")
+        try:
+            image_result = self.runtime.image_client.generate_image(
+                model=self.runtime.config.image_model,
+                prompt=str(state.get("artifacts", {}).get("payload_final", {}).get("value", "") or ""),
+                size="1536x1024",
+                image_attempt_id=image_attempt_id,
+            )
+        except Exception as exc:
+            error_payload = classify_error(exc)
+            image_result = {
+                "image_url": "",
+                "image_b64": "",
+                "image_mime_type": "image/png",
+                "revised_prompt": f"Image generation fallback used: {exc}",
+                "error": error_payload,
+                "raw_json": {},
+                "image_attempt_id": image_attempt_id,
             }
-            artifact = self.runtime.save_image_artifact(state["session_id"], artifact)
-            state["artifacts"]["image_result"] = artifact
-            if artifact.get("value", {}).get("public_url") or artifact.get("value", {}).get("image_url"):
-                state["messages"] = append_message(
-                    state.get("messages", []),
-                    from_role="virtual_worker",
-                    to_role="controller",
-                    message_type="positive_check",
-                    task_id=task["task_id"],
-                    task_type=task_type,
-                    summary="Image generation completed.",
-                    payload={"artifact": artifact},
-                )
-                state["stage"] = "image_generation_completed"
-            else:
-                state["messages"] = append_message(
-                    state.get("messages", []),
-                    from_role="virtual_worker",
-                    to_role="controller",
-                    message_type="image_generation_failed",
-                    task_id=task["task_id"],
-                    task_type=task_type,
-                    summary="Image generation failed.",
-                    payload={
-                        "artifact": artifact,
-                        "warning": image_warning or "图片生成失败，未返回可显示图片。",
-                    },
-                )
-                state["stage"] = "image_generation_failed"
-            return state
+            image_warning = f"图片模型未成功返回结果：{error_payload['code']} - {error_payload['message']}"
+        artifact = self.runtime.save_image_artifact(
+            state["session_id"],
+            {"key": "image_generator", "value": image_result},
+        )
+        if artifact.get("value", {}).get("public_url") or artifact.get("value", {}).get("image_url"):
+            message = append_message(
+                [],
+                from_role="virtual_worker",
+                to_role="controller",
+                message_type="positive_check",
+                task_id=task["task_id"],
+                task_type=task_type,
+                summary="Image generation completed.",
+                payload={"artifact": artifact},
+            )[0]
+            stage = "image_generation_completed"
+        else:
+            message = append_message(
+                [],
+                from_role="virtual_worker",
+                to_role="controller",
+                message_type="image_generation_failed",
+                task_id=task["task_id"],
+                task_type=task_type,
+                summary="Image generation failed.",
+                payload={
+                    "artifact": artifact,
+                    "warning": image_warning or "图片生成失败，未返回可显示图片。",
+                },
+            )[0]
+            stage = "image_generation_failed"
+        return {
+            "task": task,
+            "artifact_ref": "image_result",
+            "artifact": artifact,
+            "messages": [message],
+            "reviews": [],
+            "warnings": [image_warning] if image_warning else [],
+            "stage": stage,
+        }
 
+    def _run_text_virtual_task(self, state: WorkflowState, task: dict[str, Any]) -> dict[str, Any]:
+        task_type = str(task["task_type"])
         user_payload = self._build_worker_payload(state, task)
+        review_task_input = self._build_review_task_input(user_payload)
         try:
             result = self.runtime.run_virtual_agent(
                 agent_type=task_type,
@@ -844,22 +1488,65 @@ class DualNodeWorkflowGraph:
                 prompt_name=result.get("prompt_name", ""),
             )
         except Exception as exc:
-            artifact = self._fallback_worker_artifact(state, task)
-            debug_event("worker_fallback_used", task_type=task_type, reason=str(exc))
-        state["artifacts"][task["output_ref"]] = artifact
+            error_payload = classify_error(exc)
+            retryable_error = self._is_retryable_worker_error(error_payload)
+            review = {
+                "approved": False,
+                "signal": "negative" if retryable_error else "fatal",
+                "blocking": not retryable_error,
+                "retry_targets": [task_type],
+                "issues": [
+                    f"{task_type} failed before producing a reviewable artifact: "
+                    f"{error_payload['code']} - {error_payload['message']}"
+                ],
+                "recommendations": [
+                    "这是模型服务限流或网络类错误，优先重试当前虚拟节点。"
+                    if retryable_error
+                    else "请稍后重试，或检查对应 LLM/MCP 服务配置与上游网关状态。"
+                ],
+                "notes": "Virtual worker execution failed; no fallback artifact was released.",
+                "transient_error": retryable_error,
+                "error_code": error_payload["code"],
+            }
+            message = append_message(
+                [],
+                from_role="virtual_worker",
+                to_role="controller",
+                message_type="negative_review" if retryable_error else "fatal_review",
+                task_id=task["task_id"],
+                task_type=task_type,
+                summary=f"{task_type} failed before review.",
+                payload={
+                    "review": review,
+                    "task": task,
+                    "task_input": review_task_input,
+                    "error": error_payload,
+                },
+            )[0]
+            debug_event(
+                "worker_failed",
+                task_type=task_type,
+                error_code=error_payload["code"],
+                error_message=error_payload["message"],
+            )
+            return {
+                "task": task,
+                "artifact_ref": "",
+                "artifact": None,
+                "messages": [message],
+                "reviews": [review],
+                "warnings": [],
+                "stage": "review_failed",
+            }
 
         review = self.runtime.run_review(
             review_phase=str(task.get("review_phase") or ""),
             target_goal=f"Review the {task_type} output before the workflow continues.",
             task_type=task_type,
-            task_input=user_payload,
+            task_input=review_task_input,
             task_output=artifact,
-            upstream_artifacts={
-                "payload_logic": state.get("artifacts", {}).get("payload_logic", {}),
-                "payload_style": state.get("artifacts", {}).get("payload_style", {}),
-                "payload_mapper": state.get("artifacts", {}).get("payload_mapper", {}),
-            },
-            prior_reviews=state.get("review_history", []),
+            upstream_artifacts=self._build_review_upstream_artifacts(state, task),
+            prior_reviews=[],
         )
         debug_event(
             "review_completed",
@@ -869,10 +1556,26 @@ class DualNodeWorkflowGraph:
             blocking=review.get("blocking", False),
             issues=review.get("issues", []),
         )
-        state["review_history"] = state.get("review_history", []) + [review]
-        if review["approved"]:
-            state["messages"] = append_message(
-                state.get("messages", []),
+        review_signal = str(review.get("signal") or ("positive" if review.get("approved") else "negative"))
+        if review_signal == "fatal":
+            message = append_message(
+                [],
+                from_role="review_tool",
+                to_role="controller",
+                message_type="fatal_review",
+                task_id=task["task_id"],
+                task_type=task_type,
+                summary=f"{task_type} received a fatal review.",
+                payload={
+                    "review": review,
+                    "task": task,
+                    "task_input": review_task_input,
+                    "task_output": artifact,
+                },
+            )[0]
+        elif review["approved"]:
+            message = append_message(
+                [],
                 from_role="review_tool",
                 to_role="controller",
                 message_type="positive_check",
@@ -880,10 +1583,10 @@ class DualNodeWorkflowGraph:
                 task_type=task_type,
                 summary=f"{task_type} passed review.",
                 payload={"review": review, "artifact": artifact},
-            )
+            )[0]
         else:
-            state["messages"] = append_message(
-                state.get("messages", []),
+            message = append_message(
+                [],
                 from_role="review_tool",
                 to_role="controller",
                 message_type="negative_review",
@@ -893,10 +1596,122 @@ class DualNodeWorkflowGraph:
                 payload={
                     "review": review,
                     "task": task,
-                    "task_input": user_payload,
+                    "task_input": review_task_input,
                     "task_output": artifact,
                 },
+            )[0]
+        return {
+            "task": task,
+            "artifact_ref": task["output_ref"],
+            "artifact": artifact,
+            "messages": [message],
+            "reviews": [review],
+            "warnings": [],
+            "stage": f"{task_type}_completed",
+        }
+
+    def _run_single_worker_task(self, state: WorkflowState, task: dict[str, Any]) -> dict[str, Any]:
+        task_type = str(task["task_type"])
+        debug_event(
+            "worker_started",
+            task_type=task_type,
+            retry_count=task.get("retry_count", 0),
+            revision_mode=task.get("revision_mode", False),
+        )
+        if task_type == "image_generation":
+            return self._run_image_generation_task(state, task)
+        return self._run_text_virtual_task(state, task)
+
+    def _task_executor(self) -> VirtualTaskExecutor:
+        executor = getattr(self.runtime, "task_executor", None)
+        if executor is not None:
+            return executor
+        return VirtualTaskExecutor(max_workers=self._max_concurrent_virtual_tasks())
+
+    def _artifact_store(self) -> ArtifactStore:
+        store = getattr(self.runtime, "artifact_store", None)
+        if store is not None:
+            return store
+        config = getattr(self.runtime, "config", None)
+        root_dir = getattr(config, "artifact_dir", None)
+        if root_dir is None:
+            from pathlib import Path
+
+            root_dir = Path("./runtime/artifacts")
+        return ArtifactStore(root_dir / "artifacts")
+
+    def _context_builder(self) -> WorkerContextBuilder:
+        builder = getattr(self, "context_builder", None)
+        if builder is not None:
+            return builder
+        return WorkerContextBuilder(self._artifact_store())
+
+    def _virtual_worker_node(self, state: WorkflowState) -> dict[str, Any]:
+        state = deepcopy(state)
+        stopped_state = self._stop_if_requested(state)
+        if stopped_state is not None:
+            return stopped_state
+        tasks = self._current_active_tasks(state)
+        if not tasks:
+            state["next_hop"] = "end"
+            return state
+
+        task_ids = {task.get("task_id") for task in tasks}
+        state["pending_tasks"] = [
+            item for item in state.get("pending_tasks", [])
+            if item.get("task_id") not in task_ids
+        ]
+        self._set_active_tasks(state, [])
+
+        if len(tasks) > 1:
+            debug_event(
+                "parallel_worker_batch_started",
+                task_types=[task["task_type"] for task in tasks],
             )
+        executor = self._task_executor()
+        session_id = str(state.get("session_id") or "")
+        run_ids = [
+            executor.submit(
+                session_id=session_id,
+                task=task,
+                handler=lambda _cancel_event, task=task: self._run_single_worker_task(deepcopy(state), task),
+            )
+            for task in tasks
+        ]
+        state["active_task_run_ids"] = run_ids
+        results = executor.wait_many(run_ids)
+        executor.cleanup_many(run_ids)
+        state["active_task_run_ids"] = []
+
+        if len(tasks) > 1:
+            debug_event(
+                "parallel_worker_batch_completed",
+                task_types=[result["task"]["task_type"] for result in results],
+            )
+
+        stopped_state = self._stop_if_requested(state)
+        if stopped_state is not None:
+            return stopped_state
+
+        for result in results:
+            artifact_ref = result.get("artifact_ref")
+            artifact = result.get("artifact")
+            if artifact_ref and artifact is not None:
+                self._store_task_artifact(
+                    state,
+                    task=result.get("task") or {},
+                    artifact_ref=str(artifact_ref),
+                    artifact=artifact,
+                )
+            state["review_history"] = state.get("review_history", []) + list(result.get("reviews", []))
+            state["warnings"] = state.get("warnings", []) + list(result.get("warnings", []))
+            state["messages"] = state.get("messages", []) + list(result.get("messages", []))
+
+        state["stage"] = (
+            "parallel_virtual_tasks_completed"
+            if len(results) > 1
+            else str(results[0].get("stage") or state.get("stage") or "")
+        )
         state["next_hop"] = "controller"
         return state
 
